@@ -555,10 +555,9 @@ class PFDWidget(QWidget):
                            x_text: float):
         """Rolling drum digit display — right-aligned, no leading zeros.
 
-        Every digit scrolls proportionally.  Higher digits move slowly;
-        the ones digit scrolls at full speed — like a mechanical counter.
-        Digits are positioned from the right so suppressed leading zeros
-        don't leave gaps.
+        Odometer-style: the ones digit scrolls freely; higher digits only
+        begin to roll when the digit directly below passes through 9→0,
+        so left-hand digits stay crisp and readable at all times.
         """
         font = QFont("Monospace", font_size)
         font.setBold(True)
@@ -576,22 +575,34 @@ class PFDWidget(QWidget):
         p.setPen(QPen(FG, 1.5))
         baseline = cy + (fm.ascent() - fm.descent()) / 2.0
 
+        # Pre-compute per-position digit and cascade fraction.
+        # Ones scroll freely; each higher position only scrolls when the
+        # position below is at 9 and rolling over (mechanical odometer).
+        digits = []
+        prev_frac = 0.0
         for position in range(num_digits):
-            # position 0 = ones, 1 = tens, …
             place = 10 ** position
-
             digit_val = (val / place) % 10.0
             digit = int(digit_val) % 10
-            frac = digit_val - int(digit_val)
 
-            # Suppress leading zeros (never suppress ones digit).
-            # A digit is a leading zero if the entire value is below this
-            # place — the fractional scroll is irrelevant for that check.
-            if position > 0 and val < place:
-                continue
+            if position == 0:
+                frac = digit_val - int(digit_val)
+            else:
+                # Only scroll when the digit below is 9 and rolling
+                lower_digit = digits[position - 1][0]
+                frac = prev_frac if lower_digit == 9 else 0.0
 
             # Smoothstep easing for fluid motion.
             frac = frac * frac * (3.0 - 2.0 * frac)
+            digits.append((digit, frac))
+            prev_frac = frac
+
+        for position, (digit, frac) in enumerate(digits):
+            place = 10 ** position
+
+            # Suppress leading zeros (never suppress ones digit).
+            if position > 0 and val < place:
+                continue
 
             next_d = (digit + 1) % 10
             prev_d = (digit - 1) % 10
