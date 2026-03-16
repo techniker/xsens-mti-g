@@ -1,0 +1,526 @@
+#!/usr/bin/env python3
+"""
+MTi-G Settings Dialog — full Mark III legacy protocol configuration.
+All available device parameters exposed.
+"""
+
+import struct
+from PyQt6.QtWidgets import (
+    QDialog, QVBoxLayout, QHBoxLayout, QGridLayout,
+    QLabel, QGroupBox, QPushButton, QComboBox, QSpinBox,
+    QDoubleSpinBox, QCheckBox, QTabWidget, QWidget, QSlider,
+    QLineEdit, QMessageBox,
+)
+from PyQt6.QtCore import Qt
+from PyQt6.QtGui import QFont
+
+from sensors import MID, Baudrates
+
+DIALOG_STYLE = """
+QDialog { background-color: #0e1017; color: #ddd; }
+QGroupBox {
+    border: 1px solid #333; border-radius: 4px; margin-top: 10px;
+    padding: 12px 6px 6px 6px; background-color: #111318;
+    color: #4CA3DD; font-weight: bold; font-size: 12px;
+}
+QGroupBox::title { subcontrol-origin: margin; left: 8px; padding: 0 4px; }
+QLabel { color: #aaa; font-size: 11px; }
+QPushButton {
+    background-color: #1a1d25; border: 1px solid #333; border-radius: 4px;
+    padding: 6px 14px; color: #ddd; font-size: 11px;
+}
+QPushButton:hover { background-color: #252830; border-color: #4CA3DD; }
+QPushButton:pressed { background-color: #4CA3DD; color: black; }
+QPushButton#danger { border-color: #c00; color: #f88; }
+QPushButton#danger:hover { background-color: #400; border-color: #f00; }
+QComboBox, QSpinBox, QDoubleSpinBox, QLineEdit {
+    background-color: #1a1d25; border: 1px solid #333; border-radius: 3px;
+    padding: 4px 8px; color: #ddd; font-size: 11px; font-family: monospace;
+}
+QComboBox:hover, QSpinBox:hover, QDoubleSpinBox:hover { border-color: #4CA3DD; }
+QSlider::groove:horizontal { height: 4px; background: #333; border-radius: 2px; }
+QSlider::handle:horizontal {
+    background: #4CA3DD; width: 14px; height: 14px; margin: -5px 0; border-radius: 7px;
+}
+QCheckBox { color: #aaa; font-size: 11px; }
+QCheckBox::indicator { width: 14px; height: 14px; border: 1px solid #555; border-radius: 3px; background: #1a1d25; }
+QCheckBox::indicator:checked { background: #4CA3DD; border-color: #4CA3DD; }
+QTabWidget::pane { border: 1px solid #333; background: #0e1017; }
+QTabBar::tab { background: #1a1d25; border: 1px solid #333; padding: 6px 14px; color: #888; font-size: 11px; }
+QTabBar::tab:selected { background: #111318; color: #4CA3DD; border-bottom: 2px solid #4CA3DD; }
+"""
+
+
+def _ro_label(text):
+    """Read-only value label."""
+    lbl = QLabel(text)
+    lbl.setStyleSheet("color: #ddd; font-family: monospace; font-weight: bold;")
+    return lbl
+
+
+def _section_label(text):
+    lbl = QLabel(text)
+    lbl.setStyleSheet("color: #666; font-size: 10px;")
+    return lbl
+
+
+class SettingsDialog(QDialog):
+
+    def __init__(self, sensor, pfd, parent=None):
+        super().__init__(parent)
+        self.sensor = sensor
+        self.pfd = pfd
+        self.info = sensor.device_info
+        self.setWindowTitle("MTi-G Settings")
+        self.setMinimumSize(620, 520)
+        self.setStyleSheet(DIALOG_STYLE)
+
+        layout = QVBoxLayout(self)
+        layout.setSpacing(6)
+
+        tabs = QTabWidget()
+        tabs.addTab(self._build_device_tab(), "Device")
+        tabs.addTab(self._build_output_tab(), "Output")
+        tabs.addTab(self._build_filter_tab(), "Filter")
+        tabs.addTab(self._build_gps_tab(), "GPS / Mag")
+        tabs.addTab(self._build_display_tab(), "Display")
+        tabs.addTab(self._build_commands_tab(), "Commands")
+        layout.addWidget(tabs)
+
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        close_btn = QPushButton("Close  [M]")
+        close_btn.clicked.connect(self.accept)
+        btn_row.addWidget(close_btn)
+        layout.addLayout(btn_row)
+
+    # ─── Device tab ───
+    def _build_device_tab(self):
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        grp = QGroupBox("Device Information (read-only)")
+        grid = QGridLayout(grp)
+        grid.setSpacing(3)
+        i = self.info
+        fields = [
+            ("Device ID", f"0x{i.device_id:08X}"),
+            ("Product Code", i.product_code or "--"),
+            ("Firmware", f"{i.fw_major}.{i.fw_minor}.{i.fw_rev}"),
+            ("Hardware", f"{i.hw_major}.{i.hw_minor}" if i.hw_major else "--"),
+            ("Protocol", "Mark III (Legacy MTData 0x32)"),
+            ("Baudrate", f"{Baudrates._map.get(i.baudrate_id, '?')} bps (ID 0x{i.baudrate_id:02X})"),
+            ("Location ID", f"{i.location_id}"),
+            ("Error Mode", f"0x{i.error_mode:04X}"),
+        ]
+        for row, (label, value) in enumerate(fields):
+            grid.addWidget(QLabel(label), row, 0)
+            grid.addWidget(_ro_label(value), row, 1)
+        layout.addWidget(grp)
+
+        # Configuration block
+        cfg_grp = QGroupBox("Current Configuration")
+        cfg_grid = QGridLayout(cfg_grp)
+        cfg_grid.setSpacing(3)
+        period_hz = 115200.0 / i.period if i.period > 0 else 0
+        eff_hz = period_hz / (i.skip_factor + 1) if i.skip_factor >= 0 else period_hz
+        cfg_fields = [
+            ("Output Mode", f"0x{i.output_mode:04X}"),
+            ("Output Settings", f"0x{i.output_settings:08X}"),
+            ("Data Length", f"{i.data_length} bytes"),
+            ("RAWGPS", "Enabled" if i.has_rawgps else "Disabled"),
+            ("Period", f"{i.period} (= {period_hz:.1f} Hz)"),
+            ("Skip Factor", f"{i.skip_factor} (effective {eff_hz:.1f} Hz)"),
+            ("Processing Flags", f"0x{i.processing_flags:02X}"),
+        ]
+        for row, (label, value) in enumerate(cfg_fields):
+            cfg_grid.addWidget(QLabel(label), row, 0)
+            cfg_grid.addWidget(_ro_label(value), row, 1)
+        layout.addWidget(cfg_grp)
+        layout.addStretch()
+        return w
+
+    # ─── Output tab ───
+    def _build_output_tab(self):
+        w = QWidget()
+        layout = QVBoxLayout(w)
+        layout.addWidget(_section_label(
+            "Changes require restart. Settings are sent to device and saved in non-volatile memory."
+        ))
+
+        # Sample rate
+        rate_grp = QGroupBox("Sample Rate")
+        rate_layout = QHBoxLayout(rate_grp)
+        rate_layout.addWidget(QLabel("Period (1/115200 s):"))
+        self._period_spin = QSpinBox()
+        self._period_spin.setRange(225, 11520)  # ~512 Hz to ~10 Hz
+        self._period_spin.setValue(self.info.period if self.info.period > 0 else 1152)
+        rate_layout.addWidget(self._period_spin)
+        self._period_hz_label = _ro_label("")
+        rate_layout.addWidget(self._period_hz_label)
+
+        rate_layout.addWidget(QLabel("Skip:"))
+        self._skip_spin = QSpinBox()
+        self._skip_spin.setRange(0, 65535)
+        self._skip_spin.setValue(self.info.skip_factor)
+        rate_layout.addWidget(self._skip_spin)
+
+        # Now both spins exist, connect signals and update label
+        self._period_spin.valueChanged.connect(self._update_period_label)
+        self._skip_spin.valueChanged.connect(self._update_period_label)
+        self._update_period_label()
+
+        apply_rate_btn = QPushButton("Apply")
+        apply_rate_btn.clicked.connect(self._apply_rate)
+        rate_layout.addWidget(apply_rate_btn)
+        layout.addWidget(rate_grp)
+
+        # Baudrate
+        baud_grp = QGroupBox("Baudrate")
+        baud_layout = QHBoxLayout(baud_grp)
+        baud_layout.addWidget(QLabel("Baudrate:"))
+        self._baud_combo = QComboBox()
+        sorted_bauds = sorted(Baudrates._map.items(), key=lambda x: x[1])
+        for bid, bps in sorted_bauds:
+            self._baud_combo.addItem(f"{bps}", bid)
+            if bid == self.info.baudrate_id:
+                self._baud_combo.setCurrentIndex(self._baud_combo.count() - 1)
+        baud_layout.addWidget(self._baud_combo)
+        apply_baud_btn = QPushButton("Apply (needs reconnect)")
+        apply_baud_btn.clicked.connect(self._apply_baud)
+        baud_layout.addWidget(apply_baud_btn)
+        layout.addWidget(baud_grp)
+
+        layout.addStretch()
+        return w
+
+    def _update_period_label(self):
+        p = self._period_spin.value()
+        s = self._skip_spin.value()
+        hz = 115200.0 / p
+        eff = hz / (s + 1)
+        self._period_hz_label.setText(f"= {hz:.1f} Hz, eff {eff:.1f} Hz")
+
+    def _apply_rate(self):
+        p = self._period_spin.value()
+        s = self._skip_spin.value()
+        self.sensor.apply_setting(MID.SetPeriod, struct.pack('!H', p))
+        self.sensor.apply_setting(MID.SetOutputSkipFactor, struct.pack('!H', s))
+        self._set_status(f"Period={p}, Skip={s} sent (restart required)")
+
+    def _apply_baud(self):
+        bid = self._baud_combo.currentData()
+        self.sensor.apply_setting(MID.SetBaudrate, struct.pack('!B', bid))
+        bps = Baudrates._map.get(bid, '?')
+        self._set_status(f"Baudrate {bps} sent — reconnect with new baud rate")
+
+    # ─── Filter tab ───
+    def _build_filter_tab(self):
+        w = QWidget()
+        layout = QVBoxLayout(w)
+
+        # XKF Scenario / Filter Profile
+        scen_grp = QGroupBox("XKF Filter Profile / Scenario")
+        scen_layout = QVBoxLayout(scen_grp)
+
+        cur_label = QLabel(f"Current scenario ID: {self.info.current_scenario}")
+        cur_label.setStyleSheet("color: #4CA3DD; font-weight: bold;")
+        scen_layout.addWidget(cur_label)
+
+        self._scenario_combo = QComboBox()
+        if self.info.available_scenarios:
+            for sc in self.info.available_scenarios:
+                self._scenario_combo.addItem(
+                    f"[{sc.profile_type}] v{sc.version} — {sc.label}", sc.profile_type
+                )
+                if sc.profile_type == self.info.current_scenario:
+                    self._scenario_combo.setCurrentIndex(self._scenario_combo.count() - 1)
+        else:
+            self._scenario_combo.addItem("(no scenarios available)")
+        scen_layout.addWidget(self._scenario_combo)
+
+        apply_scen_btn = QPushButton("Apply Scenario")
+        apply_scen_btn.clicked.connect(self._apply_scenario)
+        scen_layout.addWidget(apply_scen_btn)
+        layout.addWidget(scen_grp)
+
+        # Gravity Magnitude
+        grav_grp = QGroupBox("Gravity Magnitude")
+        grav_layout = QHBoxLayout(grav_grp)
+        grav_layout.addWidget(QLabel("Local gravity [m/s²]:"))
+        self._grav_spin = QDoubleSpinBox()
+        self._grav_spin.setRange(9.70, 9.85)
+        self._grav_spin.setDecimals(5)
+        self._grav_spin.setSingleStep(0.0001)
+        self._grav_spin.setValue(self.info.gravity_magnitude)
+        grav_layout.addWidget(self._grav_spin)
+        apply_grav = QPushButton("Apply")
+        apply_grav.clicked.connect(lambda: (
+            self.sensor.apply_setting(MID.SetGravityMagnitude, struct.pack('!f', self._grav_spin.value())),
+            self._set_status("Gravity magnitude sent"),
+        ))
+        grav_layout.addWidget(apply_grav)
+        layout.addWidget(grav_grp)
+
+        # Alignment Rotation
+        align_grp = QGroupBox("Sensor Alignment Rotation (quaternion)")
+        align_grid = QGridLayout(align_grp)
+        q = self.info.alignment_rotation
+        self._align_q = []
+        for i, (label, val) in enumerate([("w", q[0]), ("x", q[1]), ("y", q[2]), ("z", q[3])]):
+            align_grid.addWidget(QLabel(label), 0, i)
+            spin = QDoubleSpinBox()
+            spin.setRange(-1.0, 1.0)
+            spin.setDecimals(6)
+            spin.setSingleStep(0.001)
+            spin.setValue(val)
+            align_grid.addWidget(spin, 1, i)
+            self._align_q.append(spin)
+        apply_align = QPushButton("Apply")
+        apply_align.clicked.connect(self._apply_alignment)
+        align_grid.addWidget(apply_align, 2, 0, 1, 4)
+        layout.addWidget(align_grp)
+
+        # Accel smoothing (display-side)
+        smooth_grp = QGroupBox("Accelerometer Smoothing (display)")
+        smooth_layout = QHBoxLayout(smooth_grp)
+        smooth_layout.addWidget(QLabel("Responsive"))
+        self._smooth_slider = QSlider(Qt.Orientation.Horizontal)
+        self._smooth_slider.setRange(0, 95)
+        self._smooth_slider.setValue(int(self.pfd._lp_alpha * 100))
+        self._smooth_slider.valueChanged.connect(self._on_smooth_changed)
+        smooth_layout.addWidget(self._smooth_slider)
+        smooth_layout.addWidget(QLabel("Smooth"))
+        self._smooth_val = _ro_label(f"{self.pfd._lp_alpha:.2f}")
+        smooth_layout.addWidget(self._smooth_val)
+        layout.addWidget(smooth_grp)
+
+        layout.addStretch()
+        return w
+
+    def _apply_scenario(self):
+        sc_type = self._scenario_combo.currentData()
+        if sc_type is not None:
+            self.sensor.apply_setting(MID.SetCurrentScenario, struct.pack('!H', sc_type))
+            self._set_status(f"Scenario {sc_type} sent")
+
+    def _apply_alignment(self):
+        qw, qx, qy, qz = [s.value() for s in self._align_q]
+        self.sensor.apply_setting(MID.SetAlignmentRotation, struct.pack('!ffff', qw, qx, qy, qz))
+        self._set_status("Alignment rotation sent")
+
+    def _on_smooth_changed(self, value):
+        alpha = value / 100.0
+        self.pfd._lp_alpha = alpha
+        self._smooth_val.setText(f"{alpha:.2f}")
+
+    # ─── GPS / Mag tab ───
+    def _build_gps_tab(self):
+        w = QWidget()
+        layout = QVBoxLayout(w)
+
+        # GPS Lever Arm
+        la_grp = QGroupBox("GPS Antenna Lever Arm (sensor frame, meters)")
+        la_grid = QGridLayout(la_grp)
+        la = self.info.lever_arm_gps
+        self._la_spins = []
+        for i, (label, val) in enumerate([("X", la[0]), ("Y", la[1]), ("Z", la[2])]):
+            la_grid.addWidget(QLabel(label), 0, i)
+            spin = QDoubleSpinBox()
+            spin.setRange(-10.0, 10.0)
+            spin.setDecimals(4)
+            spin.setSingleStep(0.01)
+            spin.setValue(val)
+            la_grid.addWidget(spin, 1, i)
+            self._la_spins.append(spin)
+        apply_la = QPushButton("Apply")
+        apply_la.clicked.connect(lambda: (
+            self.sensor.apply_setting(MID.SetLeverArmGPS, struct.pack('!fff', *[s.value() for s in self._la_spins])),
+            self._set_status("GPS lever arm sent"),
+        ))
+        la_grid.addWidget(apply_la, 2, 0, 1, 3)
+        layout.addWidget(la_grp)
+
+        # Magnetic Declination
+        mag_grp = QGroupBox("Magnetic Declination")
+        mag_layout = QHBoxLayout(mag_grp)
+        mag_layout.addWidget(QLabel("Declination [deg]:"))
+        self._decl_spin = QDoubleSpinBox()
+        self._decl_spin.setRange(-180.0, 180.0)
+        self._decl_spin.setDecimals(3)
+        self._decl_spin.setSingleStep(0.1)
+        self._decl_spin.setValue(self.info.magnetic_declination)
+        mag_layout.addWidget(self._decl_spin)
+        apply_decl = QPushButton("Apply")
+        apply_decl.clicked.connect(lambda: (
+            self.sensor.apply_setting(MID.SetMagneticDeclination, struct.pack('!f', self._decl_spin.value())),
+            self._set_status("Magnetic declination sent"),
+        ))
+        mag_layout.addWidget(apply_decl)
+        layout.addWidget(mag_grp)
+
+        # In-run Compass Calibration
+        icc_grp = QGroupBox("In-run Compass Calibration (ICC)")
+        icc_layout = QHBoxLayout(icc_grp)
+        start_btn = QPushButton("Start ICC")
+        start_btn.clicked.connect(lambda: self._set_status(self.sensor.send_icc_command(0)))
+        icc_layout.addWidget(start_btn)
+        stop_btn = QPushButton("Stop (discard)")
+        stop_btn.clicked.connect(lambda: self._set_status(self.sensor.send_icc_command(1)))
+        icc_layout.addWidget(stop_btn)
+        store_btn = QPushButton("Store & Stop")
+        store_btn.clicked.connect(lambda: self._set_status(self.sensor.send_icc_command(2)))
+        icc_layout.addWidget(store_btn)
+        layout.addWidget(icc_grp)
+
+        layout.addStretch()
+        return w
+
+    # ─── Display tab ───
+    def _build_display_tab(self):
+        w = QWidget()
+        layout = QVBoxLayout(w)
+
+        # Units
+        units_grp = QGroupBox("Units")
+        units_layout = QHBoxLayout(units_grp)
+        units_layout.addWidget(QLabel("Unit System:"))
+        self._units_combo = QComboBox()
+        self._units_combo.addItems(["US (knots / feet / ft/min)", "Metric (km/h / meters / m/s)"])
+        self._units_combo.setCurrentIndex(1 if self.pfd._metric else 0)
+        self._units_combo.currentIndexChanged.connect(lambda idx: setattr(self.pfd, '_metric', idx == 1))
+        units_layout.addWidget(self._units_combo)
+        layout.addWidget(units_grp)
+
+        # Barometric
+        baro_grp = QGroupBox("Barometric Altitude (QNH)")
+        baro_layout = QHBoxLayout(baro_grp)
+        baro_layout.addWidget(QLabel("Sea-level pressure [Pa]:"))
+        self._p0_spin = QDoubleSpinBox()
+        self._p0_spin.setRange(90000, 110000)
+        self._p0_spin.setDecimals(1)
+        self._p0_spin.setSingleStep(100)
+        self._p0_spin.setValue(self.sensor.p0_pa)
+        self._p0_spin.valueChanged.connect(lambda v: setattr(self.sensor, 'p0_pa', v))
+        baro_layout.addWidget(self._p0_spin)
+        std_btn = QPushButton("STD 1013.25")
+        std_btn.clicked.connect(lambda: self._p0_spin.setValue(101325.0))
+        baro_layout.addWidget(std_btn)
+        layout.addWidget(baro_grp)
+
+        # Keyboard shortcuts
+        keys_grp = QGroupBox("Keyboard Shortcuts")
+        keys_grid = QGridLayout(keys_grp)
+        keys_grid.setSpacing(2)
+        for row, (key, desc) in enumerate([
+            ("Z", "Level AHRS"), ("R", "Reset level"), ("C", "Reset orientation"),
+            ("U", "Toggle units"), ("M", "Settings"), ("F", "Fullscreen"), ("Q / Esc", "Quit"),
+        ]):
+            k = QLabel(key)
+            k.setStyleSheet("color: #4CA3DD; font-family: monospace; font-weight: bold;")
+            keys_grid.addWidget(k, row, 0)
+            keys_grid.addWidget(QLabel(desc), row, 1)
+        layout.addWidget(keys_grp)
+        layout.addStretch()
+        return w
+
+    # ─── Commands tab ───
+    def _build_commands_tab(self):
+        w = QWidget()
+        layout = QVBoxLayout(w)
+
+        # Orientation commands
+        ori_grp = QGroupBox("Orientation")
+        ori_layout = QHBoxLayout(ori_grp)
+        cal_btn = QPushButton("Object Reset (C)")
+        cal_btn.setToolTip("ResetOrientation 0x0003 — reset EKF orientation reference")
+        cal_btn.clicked.connect(lambda: self._set_status(self.sensor.calibrate()))
+        ori_layout.addWidget(cal_btn)
+        zero_btn = QPushButton("Level AHRS (Z)")
+        zero_btn.clicked.connect(self.pfd.zero_attitude)
+        ori_layout.addWidget(zero_btn)
+        reset_btn = QPushButton("Reset Level (R)")
+        reset_btn.clicked.connect(self.pfd.reset_zero)
+        ori_layout.addWidget(reset_btn)
+        layout.addWidget(ori_grp)
+
+        # Device commands
+        dev_grp = QGroupBox("Device")
+        dev_layout = QHBoxLayout(dev_grp)
+        reset_dev = QPushButton("Reset Device")
+        reset_dev.setObjectName("danger")
+        reset_dev.setToolTip("MID 0x40 — full device reset, will disconnect")
+        reset_dev.clicked.connect(self._reset_device)
+        dev_layout.addWidget(reset_dev)
+
+        factory_btn = QPushButton("Restore Factory Defaults")
+        factory_btn.setObjectName("danger")
+        factory_btn.setToolTip("MID 0x0E — restore all settings to factory defaults")
+        factory_btn.clicked.connect(self._restore_factory)
+        dev_layout.addWidget(factory_btn)
+        layout.addWidget(dev_grp)
+
+        # Location ID
+        loc_grp = QGroupBox("Location ID")
+        loc_layout = QHBoxLayout(loc_grp)
+        loc_layout.addWidget(QLabel("ID:"))
+        self._loc_spin = QSpinBox()
+        self._loc_spin.setRange(0, 65535)
+        self._loc_spin.setValue(self.info.location_id)
+        loc_layout.addWidget(self._loc_spin)
+        apply_loc = QPushButton("Apply")
+        apply_loc.clicked.connect(lambda: (
+            self.sensor.apply_setting(MID.SetLocationID, struct.pack('!H', self._loc_spin.value())),
+            self._set_status("Location ID sent"),
+        ))
+        loc_layout.addWidget(apply_loc)
+        layout.addWidget(loc_grp)
+
+        # Error Mode
+        err_grp = QGroupBox("Error Mode")
+        err_layout = QHBoxLayout(err_grp)
+        self._err_combo = QComboBox()
+        self._err_combo.addItems([
+            "0x0000 — Disable all errors",
+            "0x0001 — Default (send error message)",
+            "0x0002 — Send last valid data on error",
+            "0x0003 — Send error + last valid data",
+        ])
+        self._err_combo.setCurrentIndex(min(self.info.error_mode, 3))
+        err_layout.addWidget(self._err_combo)
+        apply_err = QPushButton("Apply")
+        apply_err.clicked.connect(lambda: (
+            self.sensor.apply_setting(MID.SetErrorMode, struct.pack('!H', self._err_combo.currentIndex())),
+            self._set_status("Error mode sent"),
+        ))
+        err_layout.addWidget(apply_err)
+        layout.addWidget(err_grp)
+
+        layout.addStretch()
+        return w
+
+    def _reset_device(self):
+        ret = QMessageBox.warning(self, "Reset Device",
+                                  "This will reset the MTi-G. Connection will be lost.\nContinue?",
+                                  QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if ret == QMessageBox.StandardButton.Yes:
+            self.sensor.apply_setting(MID.Reset, b'')
+            self._set_status("Device reset sent")
+
+    def _restore_factory(self):
+        ret = QMessageBox.warning(self, "Restore Factory Defaults",
+                                  "This will erase all custom settings!\nContinue?",
+                                  QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+        if ret == QMessageBox.StandardButton.Yes:
+            self.sensor.apply_setting(MID.RestoreFactoryDef, b'')
+            self._set_status("Factory defaults restored — restart required")
+
+    def _set_status(self, msg):
+        if hasattr(self.parent(), '_status_label'):
+            self.parent()._status_label.setText(str(msg))
+            self.parent()._status_label.setStyleSheet("color: #00CC00; padding-left: 8px;")
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key.Key_M:
+            self.accept()
+        else:
+            super().keyPressEvent(event)
