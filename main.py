@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Airbus PFD - Primary Flight Display for Xsens MTi
+AHRS - Primary Flight Display for Xsens MTi
 Bjoern Heller <tec@sixtopia.net>
 
 Usage:
@@ -42,7 +42,7 @@ class MainWindow(QMainWindow):
     def __init__(self, sensor: XSensSensor):
         super().__init__()
         self.sensor = sensor
-        self.setWindowTitle("Airbus PFD - Xsens MTi")
+        self.setWindowTitle("AHRS - Xsens MTi")
         self.setStyleSheet("background-color: #0A0C10; color: white;")
 
         # Main layout: PFD on top (wide), data strip below

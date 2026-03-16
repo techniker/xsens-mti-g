@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """
-G1000-style Primary Flight Display (PFD) Widget
-Custom-painted Qt widget aligned to the Garmin G1000 Pilot's Guide
-(190-00498-08 Rev A):
+Primary Flight Display (PFD) Widget for Xsens MTi AHRS data.
   - Attitude indicator (sky/ground, pitch ladder with 2.5° fine marks, bank arc)
   - Speed tape (scrolling, left side, color bands, rolling pointer)
   - Altitude tape (scrolling, right side, rolling pointer)
@@ -47,7 +45,7 @@ SPD_VNE = 163   # never exceed (red line)
 
 
 class PFDWidget(QWidget):
-    """Full Airbus-style PFD rendered via QPainter.
+    """Full PFD rendered via QPainter.
     Displays AHRS data directly — no additional filtering."""
 
     def __init__(self, parent=None):
