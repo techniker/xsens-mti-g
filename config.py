@@ -15,6 +15,7 @@ _DEFAULTS = {
     "spd_vno": 129,
     "spd_vne": 163,
     "auto_zero_on_start": True,
+    "hdg_bug": 0,
 }
 
 
