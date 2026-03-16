@@ -79,6 +79,12 @@ class PFDWidget(QWidget):
         self._spd_lp_alpha = 0.85  # same smoothing constant as attitude
         self._spd_squelch = 0.5    # m/s — below this, display zero
 
+        # Display-side smoothing for rolling drums — prevents the digits
+        # from jumping faster than the eye can track.
+        self._disp_speed = 0.0
+        self._disp_alt = 0.0
+        self._disp_alpha = 0.70  # per-frame smoothing (0=raw, 1=frozen)
+
         # Z-key bias
         self._bias_roll = 0.0
         self._bias_pitch = 0.0
@@ -170,16 +176,17 @@ class PFDWidget(QWidget):
         """Compute sub-regions based on widget size."""
         w, h = self.width(), self.height()
         hdg_h = max(50, int(h * 0.08))
-        tape_w = max(90, int(w * 0.10))
+        spd_w = max(90, int(w * 0.10))
+        alt_w = max(120, int(w * 0.14))   # wider for 5 rolling digits
         vsi_w = max(45, int(w * 0.04))
-        att_x = tape_w
-        att_w = w - 2 * tape_w - vsi_w
+        att_x = spd_w
+        att_w = w - spd_w - alt_w - vsi_w
         att_h = h - hdg_h
         return {
             'att': QRect(att_x, 0, att_w, att_h),
-            'spd': QRect(0, 0, tape_w, att_h),
-            'alt': QRect(att_x + att_w, 0, tape_w, att_h),
-            'vsi': QRect(att_x + att_w + tape_w, 0, vsi_w, att_h),
+            'spd': QRect(0, 0, spd_w, att_h),
+            'alt': QRect(att_x + att_w, 0, alt_w, att_h),
+            'vsi': QRect(att_x + att_w + alt_w, 0, vsi_w, att_h),
             'hdg': QRect(att_x, att_h, att_w, hdg_h),
         }
 
@@ -382,6 +389,66 @@ class PFDWidget(QWidget):
         p.drawLine(QPointF(fx, fy - rad), QPointF(fx, fy - rad - 12))
         p.restore()
 
+    # ─────────── Rolling drum digits ───────────
+
+    def _draw_drum_pointer(self, p: QPainter, value: float, num_digits: int,
+                           cy: float, font_size: int, box_rect: QRectF,
+                           x_text: float):
+        """Rolling drum digit display with properly sized box.
+
+        Every digit scrolls proportionally.  Higher digits move slowly;
+        the ones digit scrolls at full speed — like a mechanical counter.
+        """
+        font = QFont("Monospace", font_size)
+        font.setBold(True)
+        fm = QFontMetrics(font)
+        char_w = fm.horizontalAdvance("0")
+        digit_h = fm.height()
+        half_box = box_rect.height() / 2.0
+        val = abs(value)
+
+        p.save()
+        p.setFont(font)
+        p.setPen(QPen(FG, 1.5))
+
+        for col in range(num_digits):
+            position = num_digits - 1 - col   # 0 = ones, 1 = tens, …
+            place = 10 ** position
+
+            digit_val = (val / place) % 10.0
+            digit = int(digit_val) % 10
+            frac = digit_val - int(digit_val)
+
+            # Smoothstep easing for fluid motion.
+            frac = frac * frac * (3.0 - 2.0 * frac)
+
+            # Suppress leading zeros (but always draw the ones digit).
+            if position > 0 and digit == 0 and frac < 0.001 and val < place:
+                continue
+
+            next_d = (digit + 1) % 10
+            prev_d = (digit - 1) % 10
+            sx = x_text + col * char_w
+
+            p.save()
+            p.setClipRect(QRectF(sx - 1, cy - half_box, char_w + 2, half_box * 2))
+
+            y_shift = -frac * digit_h
+            # Vertically center text in box: baseline = cy + ascent/2 - descent/2
+            baseline = cy + (fm.ascent() - fm.descent()) / 2.0
+
+            p.drawText(QPointF(sx, baseline + y_shift), str(digit))
+            p.drawText(QPointF(sx, baseline + y_shift + digit_h), str(next_d))
+            p.drawText(QPointF(sx, baseline + y_shift - digit_h), str(prev_d))
+
+            p.restore()
+
+        if value < 0:
+            p.drawText(QPointF(x_text - char_w,
+                                cy + (fm.ascent() - fm.descent()) / 2.0), "-")
+
+        p.restore()
+
     # ─────────── Speed tape ───────────
 
     def _draw_speed_tape(self, p: QPainter, r: QRect):
@@ -428,21 +495,30 @@ class PFDWidget(QWidget):
                     p.setPen(QPen(FG_DIM, 1))
                     p.drawLine(QPointF(tape_w - 12, y), QPointF(tape_w, y))
 
-        box_h = 28
+        # Display-smoothed value for the drum
+        a = self._disp_alpha
+        self._disp_speed = a * self._disp_speed + (1.0 - a) * speed_disp
+        drum_spd = self._disp_speed
+
+        # Font sized to tape height, box sized to font
+        ptr_font_sz = max(11, int(r.height() * 0.032))
+        ptr_fm = QFontMetrics(QFont("Monospace", ptr_font_sz))
+        box_h = ptr_fm.height() + 10
+        pad = 6
+
         path = QPainterPath()
         path.moveTo(tape_w, cy)
-        path.lineTo(tape_w - 10, cy - box_h / 2)
-        path.lineTo(4, cy - box_h / 2)
-        path.lineTo(4, cy + box_h / 2)
-        path.lineTo(tape_w - 10, cy + box_h / 2)
+        path.lineTo(tape_w - 12, cy - box_h / 2)
+        path.lineTo(pad, cy - box_h / 2)
+        path.lineTo(pad, cy + box_h / 2)
+        path.lineTo(tape_w - 12, cy + box_h / 2)
         path.closeSubpath()
         p.fillPath(path, POINTER_BG)
         p.setPen(QPen(FG, 1.5))
         p.drawPath(path)
 
-        font.setBold(True)
-        p.setFont(font)
-        p.drawText(QPointF(8, cy + fm.ascent() / 2.5), f"{speed_disp:3.0f}")
+        box_r = QRectF(pad, cy - box_h / 2, tape_w - 12 - pad, box_h)
+        self._draw_drum_pointer(p, drum_spd, 3, cy, ptr_font_sz, box_r, pad + 4)
 
         small_font = QFont("Monospace", max(7, int(tape_w * 0.09)))
         p.setFont(small_font)
@@ -493,21 +569,30 @@ class PFDWidget(QWidget):
                     p.setPen(QPen(FG_DIM, 1))
                     p.drawLine(QPointF(x0, y), QPointF(x0 + 12, y))
 
-        box_h = 28
+        # Display-smoothed value for the drum
+        a = self._disp_alpha
+        self._disp_alt = a * self._disp_alt + (1.0 - a) * alt_disp
+        drum_alt = self._disp_alt
+
+        # Same font size as speed tape (based on tape height, shared)
+        ptr_font_sz = max(11, int(r.height() * 0.032))
+        ptr_fm = QFontMetrics(QFont("Monospace", ptr_font_sz))
+        box_h = ptr_fm.height() + 10
+        pad = 6
+
         path = QPainterPath()
         path.moveTo(x0, cy)
-        path.lineTo(x0 + 10, cy - box_h / 2)
-        path.lineTo(x0 + tape_w - 4, cy - box_h / 2)
-        path.lineTo(x0 + tape_w - 4, cy + box_h / 2)
-        path.lineTo(x0 + 10, cy + box_h / 2)
+        path.lineTo(x0 + 12, cy - box_h / 2)
+        path.lineTo(x0 + tape_w - pad, cy - box_h / 2)
+        path.lineTo(x0 + tape_w - pad, cy + box_h / 2)
+        path.lineTo(x0 + 12, cy + box_h / 2)
         path.closeSubpath()
         p.fillPath(path, POINTER_BG)
         p.setPen(QPen(FG, 1.5))
         p.drawPath(path)
 
-        font.setBold(True)
-        p.setFont(font)
-        p.drawText(QPointF(x0 + 14, cy + fm.ascent() / 2.5), f"{alt_disp:5.0f}")
+        box_r = QRectF(x0 + 12, cy - box_h / 2, tape_w - 12 - pad, box_h)
+        self._draw_drum_pointer(p, drum_alt, 5, cy, ptr_font_sz, box_r, x0 + 16)
 
         small_font = QFont("Monospace", max(7, int(tape_w * 0.09)))
         p.setFont(small_font)
