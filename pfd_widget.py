@@ -99,6 +99,10 @@ class PFDWidget(QWidget):
         self._disp_alt = 0.0
         self._disp_alpha = 0.70  # per-frame smoothing (0=raw, 1=frozen)
 
+        # Slip/skid (lateral acceleration, filtered)
+        self._slip = 0.0       # normalized: -1..+1 range
+        self._slip_bias = 0.0  # zeroed during AHRS align
+
         # Z-key bias
         self._bias_roll = 0.0
         self._bias_pitch = 0.0
@@ -122,6 +126,10 @@ class PFDWidget(QWidget):
             a = self._lp_alpha
             self._roll = a * self._roll + (1.0 - a) * (accel_roll - self._bias_roll)
             self._pitch = a * self._pitch + (1.0 - a) * (accel_pitch - self._bias_pitch)
+            # Slip/skid: lateral accel normalized by total g, bias-corrected, LP filtered
+            g = math.sqrt(ax * ax + ay * ay + az * az)
+            slip_raw = (ay / max(g, 0.1)) - self._slip_bias
+            self._slip = a * self._slip + (1.0 - a) * max(-1.0, min(1.0, slip_raw * 5.0))
 
         # Heading: EKF only (accelerometer can't provide heading)
         if data.yaw_deg is not None:
@@ -162,6 +170,9 @@ class PFDWidget(QWidget):
             self._align_samples += 1
             if self._align_samples >= self._align_target:
                 self._align_done = True
+                # Capture slip bias (current filtered slip is the stationary offset)
+                self._slip_bias += self._slip / 5.0  # undo the *5.0 gain
+                self._slip = 0.0
                 if self._auto_zero_on_start:
                     self.zero_attitude()
 
@@ -208,21 +219,23 @@ class PFDWidget(QWidget):
     # ─────────── Layout geometry ───────────
 
     def _layout(self):
-        """Compute sub-regions based on widget size (G1000 proportions)."""
+        """Compute sub-regions based on widget size (G1000 proportions).
+        Attitude and tapes use full height; compass rose overlays the lower third."""
         w, h = self.width(), self.height()
-        hdg_h = max(50, int(h * 0.08))
-        spd_w = max(80, int(w * 0.085))   # narrow speed tape
-        alt_w = max(105, int(w * 0.105))   # wider altitude (5 digits)
+        spd_w = max(80, int(w * 0.085))
+        alt_w = max(105, int(w * 0.105))
         vsi_w = max(40, int(w * 0.035))
         att_x = spd_w
         att_w = w - spd_w - alt_w - vsi_w
-        att_h = h - hdg_h
+        # HSI overlays lower third
+        hsi_top = int(h * 0.65)
+        hsi_h = h - hsi_top
         return {
-            'att': QRect(att_x, 0, att_w, att_h),
-            'spd': QRect(0, 0, spd_w, att_h),
-            'alt': QRect(att_x + att_w, 0, alt_w, att_h),
-            'vsi': QRect(att_x + att_w + alt_w, 0, vsi_w, att_h),
-            'hdg': QRect(att_x, att_h, att_w, hdg_h),
+            'att': QRect(att_x, 0, att_w, h),
+            'spd': QRect(0, 0, spd_w, h),
+            'alt': QRect(att_x + att_w, 0, alt_w, h),
+            'vsi': QRect(att_x + att_w + alt_w, 0, vsi_w, h),
+            'hsi': QRect(spd_w, hsi_top, att_w, hsi_h),
         }
 
     # ─────────── Paint ───────────
@@ -234,10 +247,10 @@ class PFDWidget(QWidget):
 
         layout = self._layout()
         self._draw_attitude(p, layout['att'])
+        self._draw_compass_rose(p, layout['hsi'])  # overlays lower attitude
         self._draw_speed_tape(p, layout['spd'])
         self._draw_altitude_tape(p, layout['alt'])
         self._draw_vsi(p, layout['vsi'])
-        self._draw_heading_tape(p, layout['hdg'])
 
         # AHRS alignment message
         if self._valid_att and not self._align_done:
@@ -253,7 +266,7 @@ class PFDWidget(QWidget):
         if not self._valid_vsi:
             self._draw_fail_flag(p, layout['vsi'], "V/S")
         if not self._valid_hdg:
-            self._draw_fail_flag(p, layout['hdg'], "HDG")
+            self._draw_fail_flag(p, layout['hsi'], "HDG")
 
         p.end()
 
@@ -416,26 +429,27 @@ class PFDWidget(QWidget):
                 p.drawText(QPointF(-half_w - 6 - tw, y + fm.ascent() / 2.5), txt)
 
     def _draw_bank_arc(self, p: QPainter, r: QRect):
-        cx, cy = r.center().x(), r.center().y()
-        radius = min(r.width(), r.height()) * 0.38
-        arc_cy = cy - min(r.width(), r.height()) * 0.12
+        cx = r.center().x()
+        # G1000: arc sits near the top of the attitude area, large radius
+        radius = r.width() * 0.42
+        arc_cy = r.top() + radius + 14  # push arc center down just enough to show the top
 
         p.save()
         p.setClipRect(r)
 
         # Arc ±60 degrees from top
-        p.setPen(QPen(FG, 2))
+        p.setPen(QPen(FG, 1.5))
         arc_rect = QRectF(cx - radius, arc_cy - radius, radius * 2, radius * 2)
         p.drawArc(arc_rect, 30 * 16, 120 * 16)
 
-        # Tick marks
+        # Tick marks (G1000: 10, 20, 30, 45, 60)
         for ang in [-60, -45, -30, -20, -10, 10, 20, 30, 45, 60]:
             if abs(ang) in (30, 60):
-                tick_len, pen_w = radius * 0.12, 2.5
+                tick_len, pen_w = radius * 0.06, 2.0
             elif abs(ang) == 45:
-                tick_len, pen_w = radius * 0.10, 2.0
+                tick_len, pen_w = radius * 0.05, 1.5
             else:
-                tick_len, pen_w = radius * 0.08, 1.5
+                tick_len, pen_w = radius * 0.04, 1.5
 
             rad = math.radians(90 + ang)
             x1 = cx + radius * math.cos(rad)
@@ -445,53 +459,51 @@ class PFDWidget(QWidget):
             p.setPen(QPen(FG, pen_w))
             p.drawLine(QPointF(x1, y1), QPointF(x2, y2))
 
-        # Bank angle labels
-        font = QFont("Monospace", max(8, int(radius * 0.08)))
-        p.setFont(font)
-        fm = QFontMetrics(font)
-        p.setPen(QPen(FG, 1))
-        for ang in [-30, -20, -10, 10, 20, 30]:
-            rad = math.radians(90 + ang)
-            lx = cx + (radius + radius * 0.09) * math.cos(rad)
-            ly = arc_cy - (radius + radius * 0.09) * math.sin(rad)
-            txt = f"{abs(ang)}"
-            p.drawText(QPointF(lx - fm.horizontalAdvance(txt) / 2, ly + fm.ascent() / 3), txt)
-
-        # Top index triangle (fixed at 0°)
-        tri_h = radius * 0.07
-        tri_w = radius * 0.06
+        # Top index triangle (fixed at 0°, G1000: small filled white triangle)
+        tri_h = radius * 0.04
+        tri_w = radius * 0.03
         top_y = arc_cy - radius
         tri = QPolygonF([
-            QPointF(cx, top_y - tri_h),
-            QPointF(cx - tri_w, top_y),
-            QPointF(cx + tri_w, top_y),
+            QPointF(cx, top_y),
+            QPointF(cx - tri_w, top_y - tri_h),
+            QPointF(cx + tri_w, top_y - tri_h),
         ])
         p.setPen(QPen(FG, 1.5))
         p.setBrush(QBrush(FG))
         p.drawPolygon(tri)
 
-        # Moving bank pointer — triangle that rides on the arc
-        # Build at 0° (top), then rotate into position around arc center
+        # Moving bank pointer — open triangle riding inside the arc
         bank_ang = max(-60.0, min(60.0, self._roll))
-        ptr_h = radius * 0.09
-        ptr_w = radius * 0.06
-        # Triangle at top (0°): tip on arc, base inward
+        ptr_h = radius * 0.05
+        ptr_w = radius * 0.035
         tip_y = -radius
-        base_y = -radius + ptr_h
-        tri_pts = [
-            QPointF(0, tip_y),                # tip on arc
-            QPointF(-ptr_w, base_y),           # base left
-            QPointF(ptr_w, base_y),            # base right
-        ]
-        # Rotate around arc center by bank angle
+        base_y = tip_y + ptr_h
+
         p.save()
         p.translate(cx, arc_cy)
         p.rotate(-bank_ang)
+
+        # Bank pointer — filled white triangle
+        tri_pts = QPolygonF([
+            QPointF(0, tip_y),
+            QPointF(-ptr_w, base_y),
+            QPointF(ptr_w, base_y),
+        ])
         p.setPen(QPen(FG, 1.5))
         p.setBrush(QBrush(FG))
-        p.drawPolygon(QPolygonF(tri_pts))
-        p.restore()
+        p.drawPolygon(tri_pts)
 
+        # Slip/skid indicator — bar wider than the pointer triangle
+        bar_w = ptr_w * 3.0
+        bar_h = radius * 0.015
+        bar_top = base_y + radius * 0.008
+        max_disp = ptr_w * 2.5
+        slip_offset = max(-1.0, min(1.0, self._slip)) * max_disp
+        p.setPen(QPen(FG, 1.0))
+        p.setBrush(QBrush(FG))
+        p.drawRect(QRectF(-bar_w / 2 + slip_offset, bar_top, bar_w, bar_h))
+
+        p.restore()
         p.restore()
 
     def _draw_aircraft_symbol(self, p: QPainter, cx, cy):
@@ -508,7 +520,7 @@ class PFDWidget(QWidget):
 
     def _draw_fpv(self, p: QPainter, r: QRect, px_per_deg):
         cx, cy = r.center().x(), r.center().y()
-        fpv_x_px = self._fpv_x * px_per_deg * 0.6
+        fpv_x_px = self._fpv_x * px_per_deg
         fpv_y_px = -self._fpv_y * px_per_deg
 
         fx = cx + max(-r.width() * 0.4, min(r.width() * 0.4, fpv_x_px))
@@ -928,87 +940,136 @@ class PFDWidget(QWidget):
 
         p.restore()
 
-    # ─────────── Heading tape (G1000-style) ───────────
+    # ─────────── Compass Rose (G1000 360° HSI style) ───────────
 
-    def _draw_heading_tape(self, p: QPainter, r: QRect):
+    def _draw_compass_rose(self, p: QPainter, r: QRect):
         p.save()
         p.setClipRect(r)
-        p.fillRect(r, TAPE_BG)
 
         cx = r.center().x()
-        tape_h = r.height()
+        cy = r.center().y()
         hdg = self._heading
-        px_per_deg = r.width() / 60.0
-
-        font = QFont("Monospace", max(9, int(tape_h * 0.26)))
-        font.setBold(True)
-        p.setFont(font)
-        fm = QFontMetrics(font)
+        radius = min(r.width(), r.height()) * 0.44
 
         cardinal = {0: "N", 90: "E", 180: "S", 270: "W"}
-        tick_top = r.top() + 2
 
-        for i in range(-35, 36):
-            deg = hdg + i
-            norm_deg = int(round(deg)) % 360
-            x = cx + i * px_per_deg
+        # Dark semi-transparent background circle
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QColor(10, 12, 18, 210))
+        p.drawEllipse(QPointF(cx, cy), radius + 4, radius + 4)
 
-            if x < r.left() - 20 or x > r.right() + 20:
-                continue
+        # Font for labels
+        label_sz = max(9, int(radius * 0.12))
+        font = QFont("Monospace", label_sz)
+        font.setBold(True)
+        fm = QFontMetrics(font)
 
-            if norm_deg % 10 == 0:
-                # Major tick every 10°
+        # ── Rotating compass card ──
+        for deg in range(0, 360, 5):
+            # Angle on screen: deg relative to heading, 0° = top
+            ang = deg - hdg
+            rad = math.radians(ang - 90)
+            cos_a = math.cos(rad)
+            sin_a = math.sin(rad)
+
+            if deg % 10 == 0:
+                # Major tick (inward from rim)
+                r1 = radius
+                r2 = radius - radius * 0.08
                 p.setPen(QPen(FG, 1.5))
-                p.drawLine(QPointF(x, tick_top), QPointF(x, tick_top + tape_h * 0.30))
+                p.drawLine(QPointF(cx + r1 * cos_a, cy + r1 * sin_a),
+                           QPointF(cx + r2 * cos_a, cy + r2 * sin_a))
 
-                # Labels: cardinals at N/E/S/W, numeric every 30°
-                if norm_deg in cardinal:
-                    txt = cardinal[norm_deg]
-                    p.setPen(QPen(CYAN, 1.5))
-                elif norm_deg % 30 == 0:
-                    # G1000 style: "3" for 030, "12" for 120, "33" for 330
-                    txt = f"{norm_deg // 10}"
-                    p.setPen(QPen(FG, 1))
+                # Labels every 30°
+                if deg in cardinal:
+                    txt = cardinal[deg]
+                    color = CYAN
+                elif deg % 30 == 0:
+                    txt = f"{deg // 10}"
+                    color = FG
                 else:
                     txt = None
 
                 if txt:
+                    r_txt = radius - radius * 0.17
+                    lx = cx + r_txt * cos_a
+                    ly = cy + r_txt * sin_a
+                    # Draw text upright: save, translate to label pos, draw centered
+                    p.save()
+                    p.translate(lx, ly)
+                    p.setPen(QPen(color, 1.5))
+                    p.setFont(font)
                     tw = fm.horizontalAdvance(txt)
-                    p.drawText(QPointF(x - tw / 2,
-                                       tick_top + tape_h * 0.30 + fm.ascent() + 1), txt)
-
-            elif norm_deg % 5 == 0:
+                    p.drawText(QPointF(-tw / 2, fm.ascent() / 2.5), txt)
+                    p.restore()
+            else:
                 # Minor tick every 5°
+                r1 = radius
+                r2 = radius - radius * 0.04
                 p.setPen(QPen(FG_DIM, 1))
-                p.drawLine(QPointF(x, tick_top), QPointF(x, tick_top + tape_h * 0.15))
+                p.drawLine(QPointF(cx + r1 * cos_a, cy + r1 * sin_a),
+                           QPointF(cx + r2 * cos_a, cy + r2 * sin_a))
 
-        # Lubber line (white triangle at top, pointing down)
-        tri_w, tri_h = 7, 9
+        # Compass circle
+        p.setPen(QPen(FG_DIM, 1.0))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawEllipse(QPointF(cx, cy), radius, radius)
+
+        # ── Aircraft symbol (fixed, white, G1000-style top-down airplane) ──
+        s = radius * 0.10  # scale unit
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QBrush(FG))
+        plane = QPolygonF([
+            QPointF(cx, cy - s * 1.8),        # nose
+            QPointF(cx + s * 0.25, cy - s),    # right fuselage
+            QPointF(cx + s * 1.6, cy + s * 0.1),  # right wingtip
+            QPointF(cx + s * 1.6, cy + s * 0.4),
+            QPointF(cx + s * 0.25, cy + s * 0.1),  # right wing root
+            QPointF(cx + s * 0.25, cy + s * 1.0),  # right tail
+            QPointF(cx + s * 0.7, cy + s * 1.4),   # right h-stab tip
+            QPointF(cx + s * 0.7, cy + s * 1.6),
+            QPointF(cx + s * 0.15, cy + s * 1.2),
+            QPointF(cx, cy + s * 1.8),         # tail
+            QPointF(cx - s * 0.15, cy + s * 1.2),
+            QPointF(cx - s * 0.7, cy + s * 1.6),
+            QPointF(cx - s * 0.7, cy + s * 1.4),
+            QPointF(cx - s * 0.25, cy + s * 1.0),
+            QPointF(cx - s * 0.25, cy + s * 0.1),
+            QPointF(cx - s * 1.6, cy + s * 0.4),
+            QPointF(cx - s * 1.6, cy + s * 0.1),
+            QPointF(cx - s * 0.25, cy - s),
+        ])
+        p.drawPolygon(plane)
+
+        # ── Lubber line (fixed triangle at top of rose) ──
+        tri_w = radius * 0.05
+        tri_h = radius * 0.07
+        top_y = cy - radius
         tri = QPolygonF([
-            QPointF(cx, tick_top + tri_h),
-            QPointF(cx - tri_w, tick_top),
-            QPointF(cx + tri_w, tick_top),
+            QPointF(cx, top_y + tri_h),
+            QPointF(cx - tri_w, top_y - 2),
+            QPointF(cx + tri_w, top_y - 2),
         ])
         p.setPen(QPen(FG, 1.5))
-        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.setBrush(QBrush(FG))
         p.drawPolygon(tri)
 
-        # Heading readout box (bottom center, fixed size)
-        hdg_font = QFont("Monospace", max(10, int(tape_h * 0.30)))
+        # ── Heading readout box (above lubber line) ──
+        hdg_font = QFont("Monospace", max(11, int(radius * 0.13)))
         hdg_font.setBold(True)
         hdg_fm = QFontMetrics(hdg_font)
-        # Fixed box width based on "000" so it never resizes
-        fixed_tw = hdg_fm.horizontalAdvance("000")
-        box_w = fixed_tw + 12
-        box_h = hdg_fm.height() + 4
-        box_rect = QRectF(cx - box_w / 2, r.bottom() - box_h - 2, box_w, box_h)
-        p.fillRect(box_rect, POINTER_BG)
+        txt = f"{hdg:03.0f}\u00B0"
+        fixed_tw = hdg_fm.horizontalAdvance("000\u00B0")
+        box_w = fixed_tw + 14
+        box_h = hdg_fm.height() + 6
+        box_x = cx - box_w / 2
+        box_y = top_y - tri_h - box_h - 2
+        p.fillRect(QRectF(box_x, box_y, box_w, box_h), POINTER_BG)
         p.setPen(QPen(FG, 1.2))
-        p.drawRect(box_rect)
+        p.drawRect(QRectF(box_x, box_y, box_w, box_h))
         p.setFont(hdg_font)
-        txt = f"{hdg:03.0f}"
         tw = hdg_fm.horizontalAdvance(txt)
         p.drawText(QPointF(cx - tw / 2,
-                           r.bottom() - 2 - (box_h - hdg_fm.ascent()) / 2), txt)
+                           box_y + (box_h + hdg_fm.ascent() - hdg_fm.descent()) / 2), txt)
 
         p.restore()
