@@ -11,6 +11,7 @@ Keys:
     R   - Reset level bias
     C   - Calibrate (orientation reset, keep stationary)
     U   - Toggle units: US (knots/feet/fpm) vs Metric (km/h/m/m/s)
+    D   - Toggle debug panels (data readouts + status bar)
     M   - Settings menu
     F   - Toggle fullscreen
     Q   - Quit
@@ -30,8 +31,10 @@ from PyQt6.QtGui import QKeySequence, QShortcut
 
 from sensors import XSensSensor, SensorData, DeviceInfo
 from pfd_widget import PFDWidget
+import pfd_widget
 from data_panels import DataPanelWidget
 from settings_dialog import SettingsDialog
+import config
 
 
 class MainWindow(QMainWindow):
@@ -49,16 +52,17 @@ class MainWindow(QMainWindow):
         layout.setSpacing(0)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        # PFD (full width, takes most vertical space)
+        # PFD (full width — sole visible widget in normal mode)
         self.pfd = PFDWidget()
         self.pfd.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         layout.addWidget(self.pfd, 6)
 
-        # Data panels (bottom strip)
+        # Data panels (bottom strip — hidden by default)
         self.data_panel = DataPanelWidget()
         layout.addWidget(self.data_panel, 3)
+        self.data_panel.hide()
 
-        # Status bar
+        # Status bar (hidden by default)
         self.status_bar = QStatusBar()
         self.status_bar.setStyleSheet(
             "background-color: #111318; color: #888; font-size: 11px; font-family: monospace;"
@@ -67,6 +71,9 @@ class MainWindow(QMainWindow):
         self._status_label = QLabel("Connecting...")
         self._status_label.setStyleSheet("color: #FFCC00; padding-left: 8px;")
         self.status_bar.addWidget(self._status_label)
+        self.status_bar.hide()
+
+        self._debug_mode = False
 
         # Keyboard shortcuts
         QShortcut(QKeySequence(Qt.Key.Key_Q), self, self.close)
@@ -74,6 +81,7 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence(Qt.Key.Key_F), self, self._toggle_fullscreen)
         QShortcut(QKeySequence(Qt.Key.Key_C), self, self._calibrate)
         QShortcut(QKeySequence(Qt.Key.Key_U), self, lambda: self.pfd.toggle_units())
+        QShortcut(QKeySequence(Qt.Key.Key_D), self, self._toggle_debug)
         QShortcut(QKeySequence(Qt.Key.Key_M), self, self._show_settings)
 
         # Calibration result flag (polled from GUI thread)
@@ -87,6 +95,11 @@ class MainWindow(QMainWindow):
     def _show_settings(self):
         dlg = SettingsDialog(self.sensor, self.pfd, self)
         dlg.exec()
+
+    def _toggle_debug(self):
+        self._debug_mode = not self._debug_mode
+        self.data_panel.setVisible(self._debug_mode)
+        self.status_bar.setVisible(self._debug_mode)
 
     def _toggle_fullscreen(self):
         if self.isFullScreen():
@@ -144,6 +157,19 @@ class MainWindow(QMainWindow):
         self.data_panel.update_data(data)
 
     def closeEvent(self, event):
+        # Persist user settings
+        config.save({
+            "metric": self.pfd._metric,
+            "p0_pa": self.sensor.p0_pa,
+            "spd_bands_enabled": pfd_widget.SPD_BANDS_ENABLED,
+            "spd_vso": pfd_widget.SPD_VSO,
+            "spd_vs1": pfd_widget.SPD_VS1,
+            "spd_vfe": pfd_widget.SPD_VFE,
+            "spd_vno": pfd_widget.SPD_VNO,
+            "spd_vne": pfd_widget.SPD_VNE,
+            "auto_zero_on_start": self.pfd._auto_zero_on_start,
+            "hdg_bug": self.pfd._hdg_bug,
+        })
         self.sensor.stop()
         super().closeEvent(event)
 
@@ -167,8 +193,22 @@ def main():
     app.setApplicationVersion("2.0")
     app.setStyle("Fusion")
 
-    sensor = XSensSensor(port=args.port, baud=args.baud, p0_pa=args.p0)
+    # Load persisted settings
+    cfg = config.load()
+
+    sensor = XSensSensor(port=args.port, baud=args.baud, p0_pa=cfg["p0_pa"])
     window = MainWindow(sensor)
+
+    # Apply saved display settings
+    window.pfd._metric = cfg["metric"]
+    window.pfd._auto_zero_on_start = cfg["auto_zero_on_start"]
+    pfd_widget.SPD_BANDS_ENABLED = cfg["spd_bands_enabled"]
+    pfd_widget.SPD_VSO = cfg["spd_vso"]
+    pfd_widget.SPD_VS1 = cfg["spd_vs1"]
+    pfd_widget.SPD_VFE = cfg["spd_vfe"]
+    pfd_widget.SPD_VNO = cfg["spd_vno"]
+    pfd_widget.SPD_VNE = cfg["spd_vne"]
+    window.pfd._hdg_bug = cfg["hdg_bug"]
 
     if args.windowed:
         window.resize(1600, 900)
