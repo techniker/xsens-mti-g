@@ -11,6 +11,7 @@ Keys:
     R   - Reset level bias
     C   - Calibrate (orientation reset, keep stationary)
     U   - Toggle units: US (knots/feet/fpm) vs Metric (km/h/m/m/s)
+    D   - Toggle debug panels (data readouts + status bar)
     M   - Settings menu
     F   - Toggle fullscreen
     Q   - Quit
@@ -49,16 +50,17 @@ class MainWindow(QMainWindow):
         layout.setSpacing(0)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        # PFD (full width, takes most vertical space)
+        # PFD (full width — sole visible widget in normal mode)
         self.pfd = PFDWidget()
         self.pfd.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         layout.addWidget(self.pfd, 6)
 
-        # Data panels (bottom strip)
+        # Data panels (bottom strip — hidden by default)
         self.data_panel = DataPanelWidget()
         layout.addWidget(self.data_panel, 3)
+        self.data_panel.hide()
 
-        # Status bar
+        # Status bar (hidden by default)
         self.status_bar = QStatusBar()
         self.status_bar.setStyleSheet(
             "background-color: #111318; color: #888; font-size: 11px; font-family: monospace;"
@@ -67,6 +69,9 @@ class MainWindow(QMainWindow):
         self._status_label = QLabel("Connecting...")
         self._status_label.setStyleSheet("color: #FFCC00; padding-left: 8px;")
         self.status_bar.addWidget(self._status_label)
+        self.status_bar.hide()
+
+        self._debug_mode = False
 
         # Keyboard shortcuts
         QShortcut(QKeySequence(Qt.Key.Key_Q), self, self.close)
@@ -74,6 +79,7 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence(Qt.Key.Key_F), self, self._toggle_fullscreen)
         QShortcut(QKeySequence(Qt.Key.Key_C), self, self._calibrate)
         QShortcut(QKeySequence(Qt.Key.Key_U), self, lambda: self.pfd.toggle_units())
+        QShortcut(QKeySequence(Qt.Key.Key_D), self, self._toggle_debug)
         QShortcut(QKeySequence(Qt.Key.Key_M), self, self._show_settings)
 
         # Calibration result flag (polled from GUI thread)
@@ -87,6 +93,11 @@ class MainWindow(QMainWindow):
     def _show_settings(self):
         dlg = SettingsDialog(self.sensor, self.pfd, self)
         dlg.exec()
+
+    def _toggle_debug(self):
+        self._debug_mode = not self._debug_mode
+        self.data_panel.setVisible(self._debug_mode)
+        self.status_bar.setVisible(self._debug_mode)
 
     def _toggle_fullscreen(self):
         if self.isFullScreen():

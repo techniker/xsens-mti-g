@@ -15,6 +15,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
 
 from sensors import MID, Baudrates
+import pfd_widget
 
 DIALOG_STYLE = """
 QDialog { background-color: #0e1017; color: #ddd; }
@@ -407,13 +408,44 @@ class SettingsDialog(QDialog):
         baro_layout.addWidget(std_btn)
         layout.addWidget(baro_grp)
 
+        # Speed tape color bands
+        spd_grp = QGroupBox("Speed Tape Color Bands (knots)")
+        spd_grid = QGridLayout(spd_grp)
+        spd_grid.setSpacing(4)
+
+        self._spd_enable = QCheckBox("Enable speed bands")
+        self._spd_enable.setChecked(pfd_widget.SPD_BANDS_ENABLED)
+        self._spd_enable.toggled.connect(self._apply_speed_bands)
+        spd_grid.addWidget(self._spd_enable, 0, 0, 1, 4)
+
+        spd_fields = [
+            ("Vs0 (stall, flaps):", pfd_widget.SPD_VSO),
+            ("Vs1 (stall, clean):", pfd_widget.SPD_VS1),
+            ("Vfe (max flap):",     pfd_widget.SPD_VFE),
+            ("Vno (max cruise):",   pfd_widget.SPD_VNO),
+            ("Vne (never exceed):", pfd_widget.SPD_VNE),
+        ]
+        self._spd_spins = []
+        for row, (label, val) in enumerate(spd_fields, start=1):
+            spd_grid.addWidget(QLabel(label), row, 0)
+            spin = QSpinBox()
+            spin.setRange(0, 999)
+            spin.setSuffix(" kt")
+            spin.setValue(val)
+            spin.valueChanged.connect(self._apply_speed_bands)
+            spd_grid.addWidget(spin, row, 1)
+            self._spd_spins.append(spin)
+
+        layout.addWidget(spd_grp)
+
         # Keyboard shortcuts
         keys_grp = QGroupBox("Keyboard Shortcuts")
         keys_grid = QGridLayout(keys_grp)
         keys_grid.setSpacing(2)
         for row, (key, desc) in enumerate([
             ("Z", "Level AHRS"), ("R", "Reset level"), ("C", "Reset orientation"),
-            ("U", "Toggle units"), ("M", "Settings"), ("F", "Fullscreen"), ("Q / Esc", "Quit"),
+            ("U", "Toggle units"), ("D", "Toggle debug panels"),
+            ("M", "Settings"), ("F", "Fullscreen"), ("Q / Esc", "Quit"),
         ]):
             k = QLabel(key)
             k.setStyleSheet("color: #4CA3DD; font-family: monospace; font-weight: bold;")
@@ -422,6 +454,15 @@ class SettingsDialog(QDialog):
         layout.addWidget(keys_grp)
         layout.addStretch()
         return w
+
+    def _apply_speed_bands(self):
+        """Update the PFD speed tape color bands live."""
+        pfd_widget.SPD_BANDS_ENABLED = self._spd_enable.isChecked()
+        pfd_widget.SPD_VSO = self._spd_spins[0].value()
+        pfd_widget.SPD_VS1 = self._spd_spins[1].value()
+        pfd_widget.SPD_VFE = self._spd_spins[2].value()
+        pfd_widget.SPD_VNO = self._spd_spins[3].value()
+        pfd_widget.SPD_VNE = self._spd_spins[4].value()
 
     # ─── Commands tab ───
     def _build_commands_tab(self):

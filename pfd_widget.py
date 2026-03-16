@@ -26,7 +26,7 @@ from PyQt6.QtGui import (
 from sensors import SensorData
 
 
-# ─────────── Airbus Color Palette ───────────
+# ─────────── Color Palette (G1000-inspired) ───────────
 SKY      = QColor(0x4C, 0xA3, 0xDD)
 GROUND   = QColor(0xB9, 0x7A, 0x56)
 PANEL_BG = QColor(0x0A, 0x0C, 0x10)
@@ -35,8 +35,18 @@ FG_DIM   = QColor(180, 180, 180)
 YELLOW   = QColor(255, 200, 0)
 GREEN    = QColor(0, 200, 0)
 RED      = QColor(255, 50, 50)
+CYAN     = QColor(0, 220, 220)
 TAPE_BG  = QColor(20, 22, 30, 200)
 POINTER_BG = QColor(30, 32, 40, 240)
+
+# Speed tape V-speeds (knots) — adjust for your aircraft.
+# Set SPD_BANDS_ENABLED = False to hide bands.
+SPD_BANDS_ENABLED = True
+SPD_VSO = 40    # stall speed, flaps full (bottom of white arc)
+SPD_VS1 = 48    # stall speed, clean (bottom of green arc)
+SPD_VFE = 85    # max flap extended (top of white arc)
+SPD_VNO = 129   # max structural cruise (top of green arc)
+SPD_VNE = 163   # never exceed (red line)
 
 
 class PFDWidget(QWidget):
@@ -67,6 +77,13 @@ class PFDWidget(QWidget):
         self._vz = 0.0
         self._yaw_raw = 0.0
 
+        # Data validity flags — True once first valid sample arrives.
+        self._valid_att = False    # roll/pitch (accelerometer)
+        self._valid_hdg = False    # heading (EKF yaw)
+        self._valid_spd = False    # speed (velocity)
+        self._valid_alt = False    # altitude (baro or GPS)
+        self._valid_vsi = False    # vertical speed
+
         # Roll/pitch from accelerometer (gravity vector) — drift-free.
         # Light low-pass filter (alpha per sample) to smooth accel noise.
         # The Xsens MTi-G EKF drifts ~0.7°/s without GPS, so we bypass it
@@ -94,6 +111,7 @@ class PFDWidget(QWidget):
         # Roll/pitch: compute directly from accelerometer gravity vector.
         # Diagnostic proved accel is rock-solid; EKF drifts ~0.7°/s.
         if data.acc:
+            self._valid_att = True
             ax, ay, az = data.acc
             accel_roll = math.degrees(math.atan2(ay, az))
             accel_pitch = math.degrees(math.atan2(-ax, math.sqrt(ay * ay + az * az)))
@@ -104,10 +122,13 @@ class PFDWidget(QWidget):
 
         # Heading: EKF only (accelerometer can't provide heading)
         if data.yaw_deg is not None:
+            self._valid_hdg = True
             self._heading = data.yaw_deg % 360.0
             self._yaw_raw = data.yaw_deg
 
         if data.vel:
+            self._valid_spd = True
+            self._valid_vsi = True
             vx, vy, vz = data.vel
             self._vx, self._vy, self._vz = vx, vy, vz
             raw_spd = math.hypot(vx, vy)
@@ -119,6 +140,7 @@ class PFDWidget(QWidget):
             self._speed = a * self._speed + (1.0 - a) * raw_spd
             self._vsi = -vz
         elif data.speed_ms is not None:
+            self._valid_spd = True
             raw_spd = data.speed_ms
             if raw_spd < self._spd_squelch:
                 raw_spd = 0.0
@@ -126,8 +148,10 @@ class PFDWidget(QWidget):
             self._speed = a * self._speed + (1.0 - a) * raw_spd
 
         if data.baro_alt_m is not None:
+            self._valid_alt = True
             self._altitude = data.baro_alt_m
         elif data.pos_alt is not None:
+            self._valid_alt = True
             self._altitude = data.pos_alt
 
         # FPV: hidden when stationary
@@ -173,12 +197,12 @@ class PFDWidget(QWidget):
     # ─────────── Layout geometry ───────────
 
     def _layout(self):
-        """Compute sub-regions based on widget size."""
+        """Compute sub-regions based on widget size (G1000 proportions)."""
         w, h = self.width(), self.height()
         hdg_h = max(50, int(h * 0.08))
-        spd_w = max(90, int(w * 0.10))
-        alt_w = max(120, int(w * 0.14))   # wider for 5 rolling digits
-        vsi_w = max(45, int(w * 0.04))
+        spd_w = max(80, int(w * 0.085))   # narrow speed tape
+        alt_w = max(105, int(w * 0.105))   # wider altitude (5 digits)
+        vsi_w = max(40, int(w * 0.035))
         att_x = spd_w
         att_w = w - spd_w - alt_w - vsi_w
         att_h = h - hdg_h
@@ -203,7 +227,51 @@ class PFDWidget(QWidget):
         self._draw_altitude_tape(p, layout['alt'])
         self._draw_vsi(p, layout['vsi'])
         self._draw_heading_tape(p, layout['hdg'])
+
+        # Fail flags — red X over invalid instruments
+        if not self._valid_att:
+            self._draw_fail_flag(p, layout['att'], "ATT")
+        if not self._valid_spd:
+            self._draw_fail_flag(p, layout['spd'], "SPD")
+        if not self._valid_alt:
+            self._draw_fail_flag(p, layout['alt'], "ALT")
+        if not self._valid_vsi:
+            self._draw_fail_flag(p, layout['vsi'], "V/S")
+        if not self._valid_hdg:
+            self._draw_fail_flag(p, layout['hdg'], "HDG")
+
         p.end()
+
+    # ─────────── Fail flag ───────────
+
+    def _draw_fail_flag(self, p: QPainter, r: QRect, label: str):
+        """Draw red X with label over an invalid instrument region."""
+        p.save()
+        p.setClipRect(r)
+        # Semi-transparent red overlay
+        p.fillRect(r, QColor(80, 0, 0, 120))
+        # Red X
+        pen = QPen(RED, 3.0)
+        p.setPen(pen)
+        m = 8  # margin
+        p.drawLine(QPointF(r.left() + m, r.top() + m),
+                   QPointF(r.right() - m, r.bottom() - m))
+        p.drawLine(QPointF(r.right() - m, r.top() + m),
+                   QPointF(r.left() + m, r.bottom() - m))
+        # Label box in center
+        font = QFont("Monospace", max(10, int(min(r.width(), r.height()) * 0.12)))
+        font.setBold(True)
+        p.setFont(font)
+        fm = QFontMetrics(font)
+        tw = fm.horizontalAdvance(label)
+        th = fm.height()
+        bx = r.center().x() - tw / 2 - 6
+        by = r.center().y() - th / 2 - 3
+        p.fillRect(QRectF(bx, by, tw + 12, th + 6), QColor(0, 0, 0, 200))
+        p.setPen(QPen(RED, 1.5))
+        p.drawRect(QRectF(bx, by, tw + 12, th + 6))
+        p.drawText(QPointF(bx + 6, by + 3 + fm.ascent()), label)
+        p.restore()
 
     # ─────────── Attitude indicator ───────────
 
@@ -394,10 +462,12 @@ class PFDWidget(QWidget):
     def _draw_drum_pointer(self, p: QPainter, value: float, num_digits: int,
                            cy: float, font_size: int, box_rect: QRectF,
                            x_text: float):
-        """Rolling drum digit display with properly sized box.
+        """Rolling drum digit display — right-aligned, no leading zeros.
 
         Every digit scrolls proportionally.  Higher digits move slowly;
         the ones digit scrolls at full speed — like a mechanical counter.
+        Digits are positioned from the right so suppressed leading zeros
+        don't leave gaps.
         """
         font = QFont("Monospace", font_size)
         font.setBold(True)
@@ -407,45 +477,51 @@ class PFDWidget(QWidget):
         half_box = box_rect.height() / 2.0
         val = abs(value)
 
+        # Right edge of the digit area
+        x_right = x_text + num_digits * char_w
+
         p.save()
         p.setFont(font)
         p.setPen(QPen(FG, 1.5))
+        baseline = cy + (fm.ascent() - fm.descent()) / 2.0
 
-        for col in range(num_digits):
-            position = num_digits - 1 - col   # 0 = ones, 1 = tens, …
+        for position in range(num_digits):
+            # position 0 = ones, 1 = tens, …
             place = 10 ** position
 
             digit_val = (val / place) % 10.0
             digit = int(digit_val) % 10
             frac = digit_val - int(digit_val)
 
+            # Suppress leading zeros (never suppress ones digit).
+            # A digit is a leading zero if the entire value is below this
+            # place — the fractional scroll is irrelevant for that check.
+            if position > 0 and val < place:
+                continue
+
             # Smoothstep easing for fluid motion.
             frac = frac * frac * (3.0 - 2.0 * frac)
 
-            # Suppress leading zeros (but always draw the ones digit).
-            if position > 0 and digit == 0 and frac < 0.001 and val < place:
-                continue
-
             next_d = (digit + 1) % 10
             prev_d = (digit - 1) % 10
-            sx = x_text + col * char_w
+
+            # Right-aligned: ones at x_right - char_w, tens at x_right - 2*char_w, …
+            sx = x_right - (position + 1) * char_w
 
             p.save()
             p.setClipRect(QRectF(sx - 1, cy - half_box, char_w + 2, half_box * 2))
 
             y_shift = -frac * digit_h
-            # Vertically center text in box: baseline = cy + ascent/2 - descent/2
-            baseline = cy + (fm.ascent() - fm.descent()) / 2.0
-
             p.drawText(QPointF(sx, baseline + y_shift), str(digit))
             p.drawText(QPointF(sx, baseline + y_shift + digit_h), str(next_d))
             p.drawText(QPointF(sx, baseline + y_shift - digit_h), str(prev_d))
 
             p.restore()
 
+        # Negative sign (altitude below sea level)
         if value < 0:
-            p.drawText(QPointF(x_text - char_w,
-                                cy + (fm.ascent() - fm.descent()) / 2.0), "-")
+            sign_x = x_right - (num_digits + 1) * char_w
+            p.drawText(QPointF(max(box_rect.left(), sign_x), baseline), "-")
 
         p.restore()
 
@@ -460,21 +536,46 @@ class PFDWidget(QWidget):
             speed_disp = self._speed * 3.6   # m/s → km/h
             major, minor = 10, 2             # tick spacing
             span = 80.0                      # visible range
-            label = "SPD km/h"
+            label = "km/h"
         else:
             speed_disp = self._speed * 1.94384  # m/s → knots
             major, minor = 10, 2
             span = 60.0
-            label = "SPD kt"
+            label = "KT"
 
         cy = r.center().y()
         tape_w = r.width()
         px_per_unit = r.height() / span
 
-        font = QFont("Monospace", max(9, int(tape_w * 0.13)))
+        # ── G1000-style color bands (right edge of tape) ──
+        if SPD_BANDS_ENABLED:
+            bw = max(4, int(tape_w * 0.08))
+
+            def _band(v_lo, v_hi, color):
+                yt = cy - (v_hi - speed_disp) * px_per_unit
+                yb = cy - (v_lo - speed_disp) * px_per_unit
+                yt = max(r.top(), min(r.bottom(), yt))
+                yb = max(r.top(), min(r.bottom(), yb))
+                if yb > yt:
+                    p.fillRect(QRectF(tape_w - bw, yt, bw, yb - yt), color)
+
+            # Draw white first, then green on top (green overwrites overlap)
+            _band(SPD_VSO, SPD_VFE, FG)
+            _band(SPD_VS1, SPD_VNO, GREEN)
+            _band(SPD_VNO, SPD_VNE, YELLOW)
+            # Vne red line
+            y_vne = cy - (SPD_VNE - speed_disp) * px_per_unit
+            if r.top() < y_vne < r.bottom():
+                p.setPen(QPen(RED, 3.0))
+                p.drawLine(QPointF(tape_w - bw - 4, y_vne), QPointF(tape_w, y_vne))
+
+        # ── Tick marks and labels ──
+        tick_font_sz = max(8, int(tape_w * 0.12))
+        font = QFont("Monospace", tick_font_sz)
         p.setFont(font)
         fm = QFontMetrics(font)
-        p.setPen(QPen(FG, 1))
+        tick_l = min(18, int(tape_w * 0.20))
+        tick_s = min(8, int(tape_w * 0.09))
 
         base = int(speed_disp / major) * major
         for i in range(-8, 9):
@@ -487,40 +588,50 @@ class PFDWidget(QWidget):
                     continue
                 if v % major == 0:
                     p.setPen(QPen(FG, 1.5))
-                    p.drawLine(QPointF(tape_w - 25, y), QPointF(tape_w, y))
-                    txt = f"{v:3.0f}"
-                    p.drawText(QPointF(tape_w - 25 - fm.horizontalAdvance(txt) - 4,
+                    p.drawLine(QPointF(tape_w - tick_l, y), QPointF(tape_w, y))
+                    txt = f"{v:.0f}"
+                    p.drawText(QPointF(tape_w - tick_l - fm.horizontalAdvance(txt) - 3,
                                        y + fm.ascent() / 2.5), txt)
                 else:
                     p.setPen(QPen(FG_DIM, 1))
-                    p.drawLine(QPointF(tape_w - 12, y), QPointF(tape_w, y))
+                    p.drawLine(QPointF(tape_w - tick_s, y), QPointF(tape_w, y))
 
-        # Display-smoothed value for the drum
+        # ── Pointer box with rolling digits ──
         a = self._disp_alpha
         self._disp_speed = a * self._disp_speed + (1.0 - a) * speed_disp
         drum_spd = self._disp_speed
 
-        # Font sized to tape height, box sized to font
-        ptr_font_sz = max(11, int(r.height() * 0.032))
-        ptr_fm = QFontMetrics(QFont("Monospace", ptr_font_sz))
-        box_h = ptr_fm.height() + 10
-        pad = 6
+        arrow_w = 10
+        margin = 6
+        avail_w = tape_w - arrow_w - margin
+        ptr_font_sz = max(9, int(avail_w / 3 * 1.4))
+        ptr_font = QFont("Monospace", ptr_font_sz)
+        ptr_font.setBold(True)
+        ptr_fm = QFontMetrics(ptr_font)
+        while ptr_fm.horizontalAdvance("000") > avail_w and ptr_font_sz > 8:
+            ptr_font_sz -= 1
+            ptr_font = QFont("Monospace", ptr_font_sz)
+            ptr_font.setBold(True)
+            ptr_fm = QFontMetrics(ptr_font)
 
+        box_h = ptr_fm.height() + 8
         path = QPainterPath()
         path.moveTo(tape_w, cy)
-        path.lineTo(tape_w - 12, cy - box_h / 2)
-        path.lineTo(pad, cy - box_h / 2)
-        path.lineTo(pad, cy + box_h / 2)
-        path.lineTo(tape_w - 12, cy + box_h / 2)
+        path.lineTo(tape_w - arrow_w, cy - box_h / 2)
+        path.lineTo(2, cy - box_h / 2)
+        path.lineTo(2, cy + box_h / 2)
+        path.lineTo(tape_w - arrow_w, cy + box_h / 2)
         path.closeSubpath()
         p.fillPath(path, POINTER_BG)
         p.setPen(QPen(FG, 1.5))
         p.drawPath(path)
 
-        box_r = QRectF(pad, cy - box_h / 2, tape_w - 12 - pad, box_h)
-        self._draw_drum_pointer(p, drum_spd, 3, cy, ptr_font_sz, box_r, pad + 4)
+        digits_w = ptr_fm.horizontalAdvance("0") * 3
+        x_text = 2 + (avail_w - digits_w) / 2
+        box_r = QRectF(2, cy - box_h / 2, tape_w - arrow_w - 2, box_h)
+        self._draw_drum_pointer(p, drum_spd, 3, cy, ptr_font_sz, box_r, x_text)
 
-        small_font = QFont("Monospace", max(7, int(tape_w * 0.09)))
+        small_font = QFont("Monospace", max(7, int(tape_w * 0.10)))
         p.setFont(small_font)
         p.setPen(QPen(FG_DIM, 1))
         p.drawText(QPointF(4, r.bottom() - 4), label)
@@ -549,10 +660,13 @@ class PFDWidget(QWidget):
         px_per_unit = r.height() / span
         x0 = r.left()
 
-        font = QFont("Monospace", max(9, int(tape_w * 0.13)))
+        tick_font_sz = max(8, int(tape_w * 0.10))
+        font = QFont("Monospace", tick_font_sz)
         p.setFont(font)
         fm = QFontMetrics(font)
         p.setPen(QPen(FG, 1))
+        tick_l = min(20, int(tape_w * 0.18))
+        tick_s = min(10, int(tape_w * 0.09))
 
         base = int(alt_disp / major) * major
         for i in range(-8, 9):
@@ -563,44 +677,58 @@ class PFDWidget(QWidget):
                     continue
                 if v % major == 0:
                     p.setPen(QPen(FG, 1.5))
-                    p.drawLine(QPointF(x0, y), QPointF(x0 + 25, y))
-                    p.drawText(QPointF(x0 + 30, y + fm.ascent() / 2.5), f"{v:5.0f}")
+                    p.drawLine(QPointF(x0, y), QPointF(x0 + tick_l, y))
+                    p.drawText(QPointF(x0 + tick_l + 4, y + fm.ascent() / 2.5),
+                               f"{v:.0f}")
                 elif v % minor == 0:
                     p.setPen(QPen(FG_DIM, 1))
-                    p.drawLine(QPointF(x0, y), QPointF(x0 + 12, y))
+                    p.drawLine(QPointF(x0, y), QPointF(x0 + tick_s, y))
 
         # Display-smoothed value for the drum
         a = self._disp_alpha
         self._disp_alt = a * self._disp_alt + (1.0 - a) * alt_disp
         drum_alt = self._disp_alt
 
-        # Same font size as speed tape (based on tape height, shared)
-        ptr_font_sz = max(11, int(r.height() * 0.032))
-        ptr_fm = QFontMetrics(QFont("Monospace", ptr_font_sz))
-        box_h = ptr_fm.height() + 10
-        pad = 6
+        # Pointer font: fit 5 chars within (tape_w - arrow - margins)
+        arrow_w = 10
+        margin = 8
+        avail_w = tape_w - arrow_w - margin
+        ptr_font_sz = max(9, int(avail_w / 5 * 1.45))
+        ptr_font = QFont("Monospace", ptr_font_sz)
+        ptr_font.setBold(True)
+        ptr_fm = QFontMetrics(ptr_font)
+        while ptr_fm.horizontalAdvance("00000") > avail_w and ptr_font_sz > 8:
+            ptr_font_sz -= 1
+            ptr_font = QFont("Monospace", ptr_font_sz)
+            ptr_font.setBold(True)
+            ptr_fm = QFontMetrics(ptr_font)
+
+        box_h = ptr_fm.height() + 8
 
         path = QPainterPath()
         path.moveTo(x0, cy)
-        path.lineTo(x0 + 12, cy - box_h / 2)
-        path.lineTo(x0 + tape_w - pad, cy - box_h / 2)
-        path.lineTo(x0 + tape_w - pad, cy + box_h / 2)
-        path.lineTo(x0 + 12, cy + box_h / 2)
+        path.lineTo(x0 + arrow_w, cy - box_h / 2)
+        path.lineTo(x0 + tape_w - 2, cy - box_h / 2)
+        path.lineTo(x0 + tape_w - 2, cy + box_h / 2)
+        path.lineTo(x0 + arrow_w, cy + box_h / 2)
         path.closeSubpath()
         p.fillPath(path, POINTER_BG)
         p.setPen(QPen(FG, 1.5))
         p.drawPath(path)
 
-        box_r = QRectF(x0 + 12, cy - box_h / 2, tape_w - 12 - pad, box_h)
-        self._draw_drum_pointer(p, drum_alt, 5, cy, ptr_font_sz, box_r, x0 + 16)
+        # Center 5 digits in the box
+        digits_w = ptr_fm.horizontalAdvance("0") * 5
+        x_text = x0 + arrow_w + (avail_w - digits_w) / 2
+        box_r = QRectF(x0 + arrow_w, cy - box_h / 2, tape_w - arrow_w - 2, box_h)
+        self._draw_drum_pointer(p, drum_alt, 5, cy, ptr_font_sz, box_r, x_text)
 
-        small_font = QFont("Monospace", max(7, int(tape_w * 0.09)))
+        small_font = QFont("Monospace", max(7, int(tape_w * 0.10)))
         p.setFont(small_font)
         p.setPen(QPen(FG_DIM, 1))
         p.drawText(QPointF(x0 + 4, r.bottom() - 4), label)
         p.restore()
 
-    # ─────────── Vertical Speed Indicator ───────────
+    # ─────────── Vertical Speed Indicator (G1000-style) ───────────
 
     def _draw_vsi(self, p: QPainter, r: QRect):
         p.save()
@@ -609,60 +737,69 @@ class PFDWidget(QWidget):
 
         cy = r.center().y()
         h = r.height()
+        vw = r.width()
+        x0 = r.left()
 
         if self._metric:
             vsi_disp = self._vsi              # m/s
-            max_val = 10.0                    # ±10 m/s
-            ticks = [2, 4, 6, 8, 10]
-            label = "m/s"
-            fmt = "{:+.1f}"
+            max_val = 10.0
+            ticks = [1, 2, 4, 6]
+            label_ticks = {2: "2", 4: "4", 6: "6"}
         else:
             vsi_disp = self._vsi * 196.85     # ft/min
             max_val = 2000.0
-            ticks = [500, 1000, 1500, 2000]
-            label = "fpm"
-            fmt = "{:+.0f}"
+            ticks = [100, 500, 1000, 1500, 2000]
+            label_ticks = {500: ".5", 1000: "1", 1500: "1.5", 2000: "2"}
 
-        px_per = (h * 0.42) / max_val
+        # Non-linear scale: compress outer range (G1000 style)
+        def vsi_to_y(v):
+            """Map VSI value to y, with compression above half-scale."""
+            half = max_val / 2.0
+            if abs(v) <= half:
+                frac = v / half * 0.6     # inner 60% of half-height
+            else:
+                frac = 0.6 + (abs(v) - half) / (max_val - half) * 0.4
+                if v < 0:
+                    frac = -frac
+            return cy - frac * (h * 0.45)
 
+        # Zero line
         p.setPen(QPen(FG_DIM, 1))
-        p.drawLine(QPointF(r.left(), cy), QPointF(r.right(), cy))
+        p.drawLine(QPointF(x0, cy), QPointF(x0 + vw, cy))
 
-        font = QFont("Monospace", max(7, int(r.width() * 0.18)))
+        # Tick marks and labels
+        font = QFont("Monospace", max(6, int(vw * 0.20)))
         p.setFont(font)
         fm = QFontMetrics(font)
 
         for tv in ticks:
             for sign in (-1, 1):
-                y = cy - sign * tv * px_per
+                y = vsi_to_y(sign * tv)
                 if r.top() < y < r.bottom():
-                    p.setPen(QPen(FG_DIM, 1))
-                    p.drawLine(QPointF(r.left(), y), QPointF(r.left() + 8, y))
-                    if self._metric:
-                        if tv % 2 == 0:
-                            p.drawText(QPointF(r.left() + 10, y + fm.ascent() / 3), f"{tv}")
-                    else:
-                        if tv % 1000 == 0:
-                            p.drawText(QPointF(r.left() + 10, y + fm.ascent() / 3), f"{tv // 1000}")
+                    is_major = tv in label_ticks
+                    tw = 8 if is_major else 5
+                    p.setPen(QPen(FG_DIM if not is_major else FG, 1))
+                    p.drawLine(QPointF(x0, y), QPointF(x0 + tw, y))
+                    if is_major:
+                        txt = label_ticks[tv]
+                        p.drawText(QPointF(x0 + tw + 2, y + fm.ascent() / 3), txt)
 
+        # Pointer triangle
         clamped = max(-max_val, min(max_val, vsi_disp))
-        bar_y = cy - clamped * px_per
-        thresh1 = 2.5 if self._metric else 500
-        thresh2 = 7.5 if self._metric else 1500
-        color = GREEN if abs(vsi_disp) < thresh1 else (YELLOW if abs(vsi_disp) < thresh2 else RED)
-        p.setPen(QPen(color, 2.5))
-        p.drawLine(QPointF(r.left() + 2, cy), QPointF(r.left() + 2, bar_y))
+        ptr_y = vsi_to_y(clamped)
+        tri_h = max(4, int(vw * 0.25))
+        tri = QPolygonF([
+            QPointF(x0, ptr_y),
+            QPointF(x0 + tri_h, ptr_y - tri_h / 2),
+            QPointF(x0 + tri_h, ptr_y + tri_h / 2),
+        ])
+        p.setPen(Qt.PenStyle.NoPen)
+        p.setBrush(QBrush(FG))
+        p.drawPolygon(tri)
 
-        p.setPen(QPen(FG, 1))
-        p.drawText(QPointF(r.left() + 2, r.top() + fm.height() + 2), fmt.format(vsi_disp))
-
-        small_font = QFont("Monospace", max(6, int(r.width() * 0.14)))
-        p.setFont(small_font)
-        p.setPen(QPen(FG_DIM, 1))
-        p.drawText(QPointF(r.left() + 2, r.bottom() - 4), label)
         p.restore()
 
-    # ─────────── Heading tape ───────────
+    # ─────────── Heading tape (G1000-style) ───────────
 
     def _draw_heading_tape(self, p: QPainter, r: QRect):
         p.save()
@@ -674,16 +811,17 @@ class PFDWidget(QWidget):
         hdg = self._heading
         px_per_deg = r.width() / 60.0
 
-        font = QFont("Monospace", max(9, int(tape_h * 0.28)))
+        font = QFont("Monospace", max(9, int(tape_h * 0.26)))
         font.setBold(True)
         p.setFont(font)
         fm = QFontMetrics(font)
 
         cardinal = {0: "N", 90: "E", 180: "S", 270: "W"}
+        tick_top = r.top() + 2
 
         for i in range(-35, 36):
             deg = hdg + i
-            norm_deg = int(deg) % 360
+            norm_deg = int(round(deg)) % 360
             x = cx + i * px_per_deg
 
             if x < r.left() - 20 or x > r.right() + 20:
@@ -691,40 +829,49 @@ class PFDWidget(QWidget):
 
             if norm_deg % 10 == 0:
                 p.setPen(QPen(FG, 1.5))
-                p.drawLine(QPointF(x, r.top()), QPointF(x, r.top() + tape_h * 0.35))
+                p.drawLine(QPointF(x, tick_top), QPointF(x, tick_top + tape_h * 0.30))
 
-                txt = cardinal.get(norm_deg, f"{norm_deg:03d}")
-                p.setPen(QPen(FG, 1))
+                if norm_deg in cardinal:
+                    txt = cardinal[norm_deg]
+                    p.setPen(QPen(CYAN, 1.5))
+                else:
+                    txt = f"{norm_deg:03d}"
+                    p.setPen(QPen(FG, 1))
                 tw = fm.horizontalAdvance(txt)
-                p.drawText(QPointF(x - tw / 2, r.top() + tape_h * 0.35 + fm.ascent() + 2), txt)
+                p.drawText(QPointF(x - tw / 2,
+                                   tick_top + tape_h * 0.30 + fm.ascent() + 1), txt)
 
             elif norm_deg % 5 == 0:
                 p.setPen(QPen(FG_DIM, 1))
-                p.drawLine(QPointF(x, r.top()), QPointF(x, r.top() + tape_h * 0.2))
+                p.drawLine(QPointF(x, tick_top), QPointF(x, tick_top + tape_h * 0.15))
 
-        # Center pointer
-        tri_w, tri_h = 8, 10
+        # Lubber line (white triangle at top, pointing down)
+        tri_w, tri_h = 7, 9
         tri = QPolygonF([
-            QPointF(cx, r.top()),
-            QPointF(cx - tri_w, r.top() - tri_h + 2),
-            QPointF(cx + tri_w, r.top() - tri_h + 2),
+            QPointF(cx, tick_top + tri_h),
+            QPointF(cx - tri_w, tick_top),
+            QPointF(cx + tri_w, tick_top),
         ])
-        p.setPen(QPen(YELLOW, 1.5))
-        p.setBrush(QBrush(YELLOW))
+        p.setPen(QPen(FG, 1.5))
+        p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawPolygon(tri)
 
-        # Heading readout box
-        box_w, box_h = 50, tape_h * 0.5
+        # Heading readout box (bottom center, fixed size)
+        hdg_font = QFont("Monospace", max(10, int(tape_h * 0.30)))
+        hdg_font.setBold(True)
+        hdg_fm = QFontMetrics(hdg_font)
+        # Fixed box width based on "000" so it never resizes
+        fixed_tw = hdg_fm.horizontalAdvance("000")
+        box_w = fixed_tw + 12
+        box_h = hdg_fm.height() + 4
         box_rect = QRectF(cx - box_w / 2, r.bottom() - box_h - 2, box_w, box_h)
         p.fillRect(box_rect, POINTER_BG)
         p.setPen(QPen(FG, 1.2))
         p.drawRect(box_rect)
-
+        p.setFont(hdg_font)
         txt = f"{hdg:03.0f}"
-        p.drawText(QPointF(cx - fm.horizontalAdvance(txt) / 2, r.bottom() - 6), txt)
+        tw = hdg_fm.horizontalAdvance(txt)
+        p.drawText(QPointF(cx - tw / 2,
+                           r.bottom() - 2 - (box_h - hdg_fm.ascent()) / 2), txt)
 
-        small_font = QFont("Monospace", max(7, int(tape_h * 0.18)))
-        p.setFont(small_font)
-        p.setPen(QPen(FG_DIM, 1))
-        p.drawText(QPointF(r.left() + 4, r.bottom() - 4), "HDG")
         p.restore()
