@@ -388,7 +388,7 @@ class SettingsDialog(QDialog):
         self._units_combo = QComboBox()
         self._units_combo.addItems(["US (knots / feet / ft/min)", "Metric (km/h / meters / m/s)"])
         self._units_combo.setCurrentIndex(1 if self.pfd._metric else 0)
-        self._units_combo.currentIndexChanged.connect(lambda idx: setattr(self.pfd, '_metric', idx == 1))
+        self._units_combo.currentIndexChanged.connect(self._on_units_changed)
         units_layout.addWidget(self._units_combo)
         layout.addWidget(units_grp)
 
@@ -408,9 +408,26 @@ class SettingsDialog(QDialog):
         baro_layout.addWidget(std_btn)
         layout.addWidget(baro_grp)
 
+        # Startup
+        startup_grp = QGroupBox("Startup")
+        startup_layout = QHBoxLayout(startup_grp)
+        self._auto_zero_cb = QCheckBox("Auto-zero attitude after AHRS alignment")
+        self._auto_zero_cb.setChecked(self.pfd._auto_zero_on_start)
+        self._auto_zero_cb.toggled.connect(
+            lambda v: setattr(self.pfd, '_auto_zero_on_start', v))
+        startup_layout.addWidget(self._auto_zero_cb)
+        layout.addWidget(startup_grp)
+
         # Speed tape color bands
-        spd_grp = QGroupBox("Speed Tape Color Bands (knots)")
-        spd_grid = QGridLayout(spd_grp)
+        # V-speeds stored internally in knots; display in current unit
+        self._kt_to_kmh = 3.6 / 1.94384  # ≈ 1.852
+        metric = self.pfd._metric
+        suffix = " km/h" if metric else " kt"
+        k = self._kt_to_kmh if metric else 1.0
+
+        self._spd_grp = QGroupBox(
+            f"Speed Tape Color Bands ({'km/h' if metric else 'knots'})")
+        spd_grid = QGridLayout(self._spd_grp)
         spd_grid.setSpacing(4)
 
         self._spd_enable = QCheckBox("Enable speed bands")
@@ -426,17 +443,17 @@ class SettingsDialog(QDialog):
             ("Vne (never exceed):", pfd_widget.SPD_VNE),
         ]
         self._spd_spins = []
-        for row, (label, val) in enumerate(spd_fields, start=1):
+        for row, (label, val_kt) in enumerate(spd_fields, start=1):
             spd_grid.addWidget(QLabel(label), row, 0)
             spin = QSpinBox()
             spin.setRange(0, 999)
-            spin.setSuffix(" kt")
-            spin.setValue(val)
+            spin.setSuffix(suffix)
+            spin.setValue(int(round(val_kt * k)))
             spin.valueChanged.connect(self._apply_speed_bands)
             spd_grid.addWidget(spin, row, 1)
             self._spd_spins.append(spin)
 
-        layout.addWidget(spd_grp)
+        layout.addWidget(self._spd_grp)
 
         # Keyboard shortcuts
         keys_grp = QGroupBox("Keyboard Shortcuts")
@@ -455,14 +472,36 @@ class SettingsDialog(QDialog):
         layout.addStretch()
         return w
 
+    def _on_units_changed(self, idx):
+        """Unit combo changed — update PFD and refresh speed band spinboxes."""
+        self.pfd._metric = (idx == 1)
+        self._refresh_speed_spins()
+
+    def _refresh_speed_spins(self):
+        """Re-display speed band spinboxes in the current unit system."""
+        metric = self.pfd._metric
+        suffix = " km/h" if metric else " kt"
+        k = self._kt_to_kmh if metric else 1.0
+        self._spd_grp.setTitle(
+            f"Speed Tape Color Bands ({'km/h' if metric else 'knots'})")
+        kt_vals = [pfd_widget.SPD_VSO, pfd_widget.SPD_VS1,
+                    pfd_widget.SPD_VFE, pfd_widget.SPD_VNO, pfd_widget.SPD_VNE]
+        for spin, val_kt in zip(self._spd_spins, kt_vals):
+            spin.blockSignals(True)
+            spin.setSuffix(suffix)
+            spin.setValue(int(round(val_kt * k)))
+            spin.blockSignals(False)
+
     def _apply_speed_bands(self):
-        """Update the PFD speed tape color bands live."""
+        """Update the PFD speed tape color bands live.
+        Spinbox values are in display units — convert back to knots for storage."""
         pfd_widget.SPD_BANDS_ENABLED = self._spd_enable.isChecked()
-        pfd_widget.SPD_VSO = self._spd_spins[0].value()
-        pfd_widget.SPD_VS1 = self._spd_spins[1].value()
-        pfd_widget.SPD_VFE = self._spd_spins[2].value()
-        pfd_widget.SPD_VNO = self._spd_spins[3].value()
-        pfd_widget.SPD_VNE = self._spd_spins[4].value()
+        k = 1.0 / self._kt_to_kmh if self.pfd._metric else 1.0
+        pfd_widget.SPD_VSO = int(round(self._spd_spins[0].value() * k))
+        pfd_widget.SPD_VS1 = int(round(self._spd_spins[1].value() * k))
+        pfd_widget.SPD_VFE = int(round(self._spd_spins[2].value() * k))
+        pfd_widget.SPD_VNO = int(round(self._spd_spins[3].value() * k))
+        pfd_widget.SPD_VNE = int(round(self._spd_spins[4].value() * k))
 
     # ─── Commands tab ───
     def _build_commands_tab(self):

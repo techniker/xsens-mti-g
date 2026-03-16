@@ -1,19 +1,16 @@
 #!/usr/bin/env python3
 """
-Airbus-Accurate Primary Flight Display (PFD) Widget
-Custom-painted Qt widget with:
-  - Attitude indicator (sky/ground, pitch ladder, bank arc)
-  - Speed tape (scrolling, left side)
-  - Altitude tape (scrolling, right side)
-  - Heading tape (bottom, scrolling)
-  - Vertical Speed Indicator (far right)
-  - Flight Path Vector (FPV / bird)
+G1000-style Primary Flight Display (PFD) Widget
+Custom-painted Qt widget aligned to the Garmin G1000 Pilot's Guide
+(190-00498-08 Rev A):
+  - Attitude indicator (sky/ground, pitch ladder with 2.5° fine marks, bank arc)
+  - Speed tape (scrolling, left side, color bands, rolling pointer)
+  - Altitude tape (scrolling, right side, rolling pointer)
+  - Heading tape (bottom, scrolling, cardinal/numeric labels)
+  - Vertical Speed Indicator (far right, with value readout)
+  - Flight Path Vector (FPV / velocity vector)
   - Aircraft reference symbol
-  - Airbus color scheme
-
-Display philosophy: trust the Xsens MTi-G onboard EKF.
-No additional filtering — the AHRS output is displayed directly,
-exactly as a real flight instrument would.
+  - Fail flags (red X) for invalid data
 """
 
 import math
@@ -106,6 +103,12 @@ class PFDWidget(QWidget):
         self._bias_roll = 0.0
         self._bias_pitch = 0.0
 
+        # AHRS alignment phase
+        self._align_samples = 0
+        self._align_target = 90       # ~3 sec at 30 Hz
+        self._align_done = False
+        self._auto_zero_on_start = True  # zero attitude after alignment
+
     def set_data(self, data: SensorData):
         """Update attitude from accelerometer (drift-free), heading from EKF."""
         # Roll/pitch: compute directly from accelerometer gravity vector.
@@ -153,6 +156,14 @@ class PFDWidget(QWidget):
         elif data.pos_alt is not None:
             self._valid_alt = True
             self._altitude = data.pos_alt
+
+        # AHRS alignment: count valid attitude samples
+        if not self._align_done and self._valid_att:
+            self._align_samples += 1
+            if self._align_samples >= self._align_target:
+                self._align_done = True
+                if self._auto_zero_on_start:
+                    self.zero_attitude()
 
         # FPV: hidden when stationary
         hs = math.hypot(self._vx, self._vy)
@@ -228,6 +239,10 @@ class PFDWidget(QWidget):
         self._draw_vsi(p, layout['vsi'])
         self._draw_heading_tape(p, layout['hdg'])
 
+        # AHRS alignment message
+        if self._valid_att and not self._align_done:
+            self._draw_align_message(p, layout['att'])
+
         # Fail flags — red X over invalid instruments
         if not self._valid_att:
             self._draw_fail_flag(p, layout['att'], "ATT")
@@ -273,6 +288,43 @@ class PFDWidget(QWidget):
         p.drawText(QPointF(bx + 6, by + 3 + fm.ascent()), label)
         p.restore()
 
+    def _draw_align_message(self, p: QPainter, r: QRect):
+        """Yellow AHRS ALIGN message with progress bar."""
+        p.save()
+        font = QFont("Monospace", max(12, int(r.height() * 0.028)))
+        font.setBold(True)
+        p.setFont(font)
+        fm = QFontMetrics(font)
+
+        txt = "AHRS ALIGN: Keep Wings Level"
+        tw = fm.horizontalAdvance(txt)
+        th = fm.height()
+        cx, cy = r.center().x(), r.center().y() + r.height() * 0.25
+
+        # Background box
+        pad_x, pad_y = 16, 8
+        bx = cx - tw / 2 - pad_x
+        by = cy - th / 2 - pad_y
+        bw = tw + pad_x * 2
+        bh = th + pad_y * 2 + 10  # extra for progress bar
+        p.fillRect(QRectF(bx, by, bw, bh), QColor(0, 0, 0, 200))
+        p.setPen(QPen(YELLOW, 1.5))
+        p.drawRect(QRectF(bx, by, bw, bh))
+
+        # Text
+        p.drawText(QPointF(cx - tw / 2, cy - th / 2 + fm.ascent()), txt)
+
+        # Progress bar
+        progress = min(1.0, self._align_samples / max(1, self._align_target))
+        bar_y = cy + th / 2 + 4
+        bar_h = 4
+        bar_w = bw - pad_x * 2
+        bar_x = bx + pad_x
+        p.fillRect(QRectF(bar_x, bar_y, bar_w, bar_h), QColor(60, 60, 60))
+        p.fillRect(QRectF(bar_x, bar_y, bar_w * progress, bar_h), YELLOW)
+
+        p.restore()
+
     # ─────────── Attitude indicator ───────────
 
     def _draw_attitude(self, p: QPainter, r: QRect):
@@ -313,24 +365,41 @@ class PFDWidget(QWidget):
             self._draw_fpv(p, r, pitch_px_per_deg)
 
     def _draw_pitch_ladder(self, p: QPainter, px_per_deg, pitch_shift, size):
+        """G1000 pitch ladder: 10° major with labels, 5° minor, 2.5° minor
+        between ±20° of horizon."""
         font = QFont("Monospace", max(9, int(size * 0.022)))
         font.setBold(True)
         p.setFont(font)
         fm = QFontMetrics(font)
 
-        for deg in range(-90, 91, 5):
-            if deg == 0:
-                continue
+        # Build list of pitch marks: 10° major, 5° standard minor,
+        # 2.5° fine minor between -20° and +20° (per G1000 guide p.52)
+        marks = []
+        for deg10 in range(-80, 81, 10):
+            if deg10 != 0:
+                marks.append((deg10, 'major'))
+        for deg5 in range(-85, 86, 5):
+            if deg5 % 10 != 0 and deg5 != 0:
+                marks.append((deg5, 'minor'))
+        for q in range(-18, 19):          # ±17.5° in 2.5° steps
+            deg25 = q * 2.5
+            if deg25 % 5 != 0 and abs(deg25) <= 20:
+                marks.append((deg25, 'fine'))
+
+        for deg, kind in marks:
             y = pitch_shift + deg * px_per_deg
             if abs(y) > size * 0.7:
                 continue
 
-            if deg % 10 == 0:
+            if kind == 'major':
                 half_w = size * 0.12
                 p.setPen(QPen(FG, 1.8))
-            else:
+            elif kind == 'minor':
                 half_w = size * 0.06
                 p.setPen(QPen(FG, 1.2))
+            else:  # fine
+                half_w = size * 0.03
+                p.setPen(QPen(FG, 1.0))
 
             if deg < 0:
                 pen = p.pen()
@@ -339,8 +408,8 @@ class PFDWidget(QWidget):
 
             p.drawLine(QPointF(-half_w, y), QPointF(half_w, y))
 
-            if deg % 10 == 0:
-                txt = f"{abs(deg)}"
+            if kind == 'major':
+                txt = f"{abs(int(deg))}"
                 tw = fm.horizontalAdvance(txt)
                 p.setPen(QPen(FG, 1))
                 p.drawText(QPointF(half_w + 6, y + fm.ascent() / 2.5), txt)
@@ -534,13 +603,13 @@ class PFDWidget(QWidget):
 
         if self._metric:
             speed_disp = self._speed * 3.6   # m/s → km/h
-            major, minor = 10, 2             # tick spacing
+            major, minor = 10, 5             # tick spacing
             span = 80.0                      # visible range
             label = "km/h"
         else:
             speed_disp = self._speed * 1.94384  # m/s → knots
-            major, minor = 10, 2
-            span = 60.0
+            major, minor = 10, 5             # G1000: major 10, minor 5
+            span = 60.0                      # 60 kt visible
             label = "KT"
 
         cy = r.center().y()
@@ -548,6 +617,14 @@ class PFDWidget(QWidget):
         px_per_unit = r.height() / span
 
         # ── G1000-style color bands (right edge of tape) ──
+        # V-speeds are stored in knots — convert to display units
+        spd_k = 3.6 / 1.94384 if self._metric else 1.0  # kt → km/h or kt → kt
+        v_vso = SPD_VSO * spd_k
+        v_vs1 = SPD_VS1 * spd_k
+        v_vfe = SPD_VFE * spd_k
+        v_vno = SPD_VNO * spd_k
+        v_vne = SPD_VNE * spd_k
+
         if SPD_BANDS_ENABLED:
             bw = max(4, int(tape_w * 0.08))
 
@@ -560,14 +637,41 @@ class PFDWidget(QWidget):
                     p.fillRect(QRectF(tape_w - bw, yt, bw, yb - yt), color)
 
             # Draw white first, then green on top (green overwrites overlap)
-            _band(SPD_VSO, SPD_VFE, FG)
-            _band(SPD_VS1, SPD_VNO, GREEN)
-            _band(SPD_VNO, SPD_VNE, YELLOW)
+            _band(v_vso, v_vfe, FG)
+            _band(v_vs1, v_vno, GREEN)
+            _band(v_vno, v_vne, YELLOW)
+
             # Vne red line
-            y_vne = cy - (SPD_VNE - speed_disp) * px_per_unit
+            y_vne = cy - (v_vne - speed_disp) * px_per_unit
             if r.top() < y_vne < r.bottom():
                 p.setPen(QPen(RED, 3.0))
                 p.drawLine(QPointF(tape_w - bw - 4, y_vne), QPointF(tape_w, y_vne))
+
+            # 45° red/white barber-pole above Vne (overspeed)
+            # Stripes are anchored to the tape so they scroll with speed.
+            y_vne_clamp = max(r.top(), min(r.bottom(), y_vne))
+            if y_vne_clamp > r.top():
+                p.save()
+                p.setClipRect(QRectF(tape_w - bw, r.top(), bw, y_vne_clamp - r.top()))
+                stripe = bw  # stripe width = band width → 45° diagonals
+                # Phase offset: anchor stripes to speed so they move with tape
+                phase = (speed_disp * px_per_unit) % (stripe * 2)
+                # Draw diagonal stripes by filling angled parallelograms
+                y_start = r.top() - bw - stripe * 2 + phase
+                while y_start < y_vne_clamp:
+                    for color, offset in [(RED, 0), (FG, stripe)]:
+                        y0 = y_start + offset
+                        poly = QPolygonF([
+                            QPointF(tape_w - bw, y0),
+                            QPointF(tape_w, y0 - bw),
+                            QPointF(tape_w, y0 - bw + stripe),
+                            QPointF(tape_w - bw, y0 + stripe),
+                        ])
+                        p.setPen(Qt.PenStyle.NoPen)
+                        p.setBrush(QBrush(color))
+                        p.drawPolygon(poly)
+                    y_start += stripe * 2
+                p.restore()
 
         # ── Tick marks and labels ──
         tick_font_sz = max(8, int(tape_w * 0.12))
@@ -615,6 +719,8 @@ class PFDWidget(QWidget):
             ptr_fm = QFontMetrics(ptr_font)
 
         box_h = ptr_fm.height() + 8
+        overspeed = SPD_BANDS_ENABLED and speed_disp >= v_vne
+
         path = QPainterPath()
         path.moveTo(tape_w, cy)
         path.lineTo(tape_w - arrow_w, cy - box_h / 2)
@@ -622,8 +728,8 @@ class PFDWidget(QWidget):
         path.lineTo(2, cy + box_h / 2)
         path.lineTo(tape_w - arrow_w, cy + box_h / 2)
         path.closeSubpath()
-        p.fillPath(path, POINTER_BG)
-        p.setPen(QPen(FG, 1.5))
+        p.fillPath(path, QColor(80, 0, 0) if overspeed else POINTER_BG)
+        p.setPen(QPen(RED if overspeed else FG, 1.5))
         p.drawPath(path)
 
         digits_w = ptr_fm.horizontalAdvance("0") * 3
@@ -784,18 +890,41 @@ class PFDWidget(QWidget):
                         txt = label_ticks[tv]
                         p.drawText(QPointF(x0 + tw + 2, y + fm.ascent() / 3), txt)
 
-        # Pointer triangle
+        # Pointer with value readout (G1000: digits appear when > 100 fpm)
         clamped = max(-max_val, min(max_val, vsi_disp))
         ptr_y = vsi_to_y(clamped)
-        tri_h = max(4, int(vw * 0.25))
-        tri = QPolygonF([
-            QPointF(x0, ptr_y),
-            QPointF(x0 + tri_h, ptr_y - tri_h / 2),
-            QPointF(x0 + tri_h, ptr_y + tri_h / 2),
-        ])
-        p.setPen(Qt.PenStyle.NoPen)
-        p.setBrush(QBrush(FG))
-        p.drawPolygon(tri)
+        show_val = self._metric and abs(vsi_disp) >= 0.5 or \
+                   not self._metric and abs(vsi_disp) >= 100
+
+        if show_val:
+            # Pointer box with value
+            ptr_font = QFont("Monospace", max(6, int(vw * 0.18)))
+            ptr_font.setBold(True)
+            ptr_fm = QFontMetrics(ptr_font)
+            if self._metric:
+                vtxt = f"{vsi_disp:+.1f}"
+            else:
+                vtxt = f"{int(round(vsi_disp / 50) * 50):+d}"
+            bx_w = vw - 4
+            bx_h = ptr_fm.height() + 2
+            bx_y = ptr_y - bx_h / 2
+            p.fillRect(QRectF(x0 + 2, bx_y, bx_w, bx_h), POINTER_BG)
+            p.setPen(QPen(FG, 1.0))
+            p.drawRect(QRectF(x0 + 2, bx_y, bx_w, bx_h))
+            p.setFont(ptr_font)
+            p.drawText(QRectF(x0 + 2, bx_y, bx_w, bx_h),
+                       Qt.AlignmentFlag.AlignCenter, vtxt)
+        else:
+            # Small triangle pointer
+            tri_h = max(4, int(vw * 0.25))
+            tri = QPolygonF([
+                QPointF(x0, ptr_y),
+                QPointF(x0 + tri_h, ptr_y - tri_h / 2),
+                QPointF(x0 + tri_h, ptr_y + tri_h / 2),
+            ])
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QBrush(FG))
+            p.drawPolygon(tri)
 
         p.restore()
 
@@ -828,20 +957,28 @@ class PFDWidget(QWidget):
                 continue
 
             if norm_deg % 10 == 0:
+                # Major tick every 10°
                 p.setPen(QPen(FG, 1.5))
                 p.drawLine(QPointF(x, tick_top), QPointF(x, tick_top + tape_h * 0.30))
 
+                # Labels: cardinals at N/E/S/W, numeric every 30°
                 if norm_deg in cardinal:
                     txt = cardinal[norm_deg]
                     p.setPen(QPen(CYAN, 1.5))
-                else:
-                    txt = f"{norm_deg:03d}"
+                elif norm_deg % 30 == 0:
+                    # G1000 style: "3" for 030, "12" for 120, "33" for 330
+                    txt = f"{norm_deg // 10}"
                     p.setPen(QPen(FG, 1))
-                tw = fm.horizontalAdvance(txt)
-                p.drawText(QPointF(x - tw / 2,
-                                   tick_top + tape_h * 0.30 + fm.ascent() + 1), txt)
+                else:
+                    txt = None
+
+                if txt:
+                    tw = fm.horizontalAdvance(txt)
+                    p.drawText(QPointF(x - tw / 2,
+                                       tick_top + tape_h * 0.30 + fm.ascent() + 1), txt)
 
             elif norm_deg % 5 == 0:
+                # Minor tick every 5°
                 p.setPen(QPen(FG_DIM, 1))
                 p.drawLine(QPointF(x, tick_top), QPointF(x, tick_top + tape_h * 0.15))
 

@@ -31,8 +31,10 @@ from PyQt6.QtGui import QKeySequence, QShortcut
 
 from sensors import XSensSensor, SensorData, DeviceInfo
 from pfd_widget import PFDWidget
+import pfd_widget
 from data_panels import DataPanelWidget
 from settings_dialog import SettingsDialog
+import config
 
 
 class MainWindow(QMainWindow):
@@ -155,6 +157,18 @@ class MainWindow(QMainWindow):
         self.data_panel.update_data(data)
 
     def closeEvent(self, event):
+        # Persist user settings
+        config.save({
+            "metric": self.pfd._metric,
+            "p0_pa": self.sensor.p0_pa,
+            "spd_bands_enabled": pfd_widget.SPD_BANDS_ENABLED,
+            "spd_vso": pfd_widget.SPD_VSO,
+            "spd_vs1": pfd_widget.SPD_VS1,
+            "spd_vfe": pfd_widget.SPD_VFE,
+            "spd_vno": pfd_widget.SPD_VNO,
+            "spd_vne": pfd_widget.SPD_VNE,
+            "auto_zero_on_start": self.pfd._auto_zero_on_start,
+        })
         self.sensor.stop()
         super().closeEvent(event)
 
@@ -178,8 +192,21 @@ def main():
     app.setApplicationVersion("2.0")
     app.setStyle("Fusion")
 
-    sensor = XSensSensor(port=args.port, baud=args.baud, p0_pa=args.p0)
+    # Load persisted settings
+    cfg = config.load()
+
+    sensor = XSensSensor(port=args.port, baud=args.baud, p0_pa=cfg["p0_pa"])
     window = MainWindow(sensor)
+
+    # Apply saved display settings
+    window.pfd._metric = cfg["metric"]
+    window.pfd._auto_zero_on_start = cfg["auto_zero_on_start"]
+    pfd_widget.SPD_BANDS_ENABLED = cfg["spd_bands_enabled"]
+    pfd_widget.SPD_VSO = cfg["spd_vso"]
+    pfd_widget.SPD_VS1 = cfg["spd_vs1"]
+    pfd_widget.SPD_VFE = cfg["spd_vfe"]
+    pfd_widget.SPD_VNO = cfg["spd_vno"]
+    pfd_widget.SPD_VNE = cfg["spd_vne"]
 
     if args.windowed:
         window.resize(1600, 900)
