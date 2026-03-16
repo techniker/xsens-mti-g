@@ -74,6 +74,9 @@ class PFDWidget(QWidget):
         self._vz = 0.0
         self._yaw_raw = 0.0
 
+        # Heading bug (selected heading)
+        self._hdg_bug = 0.0  # degrees, 0-360
+
         # Data validity flags — True once first valid sample arrives.
         self._valid_att = False    # roll/pitch (accelerometer)
         self._valid_hdg = False    # heading (EKF yaw)
@@ -213,6 +216,13 @@ class PFDWidget(QWidget):
             self.toggle_units()
         elif event.key() == Qt.Key.Key_R:
             self.reset_zero()
+        elif event.key() == Qt.Key.Key_H:
+            # Sync heading bug to current heading
+            self._hdg_bug = self._heading
+        elif event.key() in (Qt.Key.Key_Plus, Qt.Key.Key_Equal):
+            self._hdg_bug = (self._hdg_bug + 1) % 360
+        elif event.key() == Qt.Key.Key_Minus:
+            self._hdg_bug = (self._hdg_bug - 1) % 360
         else:
             super().keyPressEvent(event)
 
@@ -944,7 +954,7 @@ class PFDWidget(QWidget):
 
     def _draw_compass_rose(self, p: QPainter, r: QRect):
         p.save()
-        p.setClipRect(r)
+        # No clip — heading box and HDG readout extend above the HSI rect
 
         cx = r.center().x()
         cy = r.center().y()
@@ -1015,6 +1025,29 @@ class PFDWidget(QWidget):
         p.setBrush(Qt.BrushStyle.NoBrush)
         p.drawEllipse(QPointF(cx, cy), radius, radius)
 
+        # ── Heading bug (cyan rectangle with outward notch, inside rim) ──
+        bug_ang = self._hdg_bug - hdg
+        bw = radius * 0.04   # half-width
+        bh = radius * 0.08   # height (inward from rim)
+        notch = bh * 0.45    # depth of the outward notch
+        p.save()
+        p.translate(cx, cy)
+        p.rotate(bug_ang)
+        # Bug at top (0°): outer edge on the rim, body extends inward
+        # Notch is cut into the OUTER edge (toward rim)
+        r_rim = radius
+        p.setPen(QPen(CYAN, 1.5))
+        p.setBrush(QBrush(CYAN))
+        bug_shape = QPolygonF([
+            QPointF(-bw, -r_rim),              # outer-left (on rim)
+            QPointF(0, -r_rim + notch),        # notch center (pushed inward)
+            QPointF(bw, -r_rim),               # outer-right (on rim)
+            QPointF(bw, -r_rim + bh),          # inner-right
+            QPointF(-bw, -r_rim + bh),         # inner-left
+        ])
+        p.drawPolygon(bug_shape)
+        p.restore()
+
         # ── Aircraft symbol (fixed, white, G1000-style top-down airplane) ──
         s = radius * 0.10  # scale unit
         p.setPen(Qt.PenStyle.NoPen)
@@ -1054,22 +1087,47 @@ class PFDWidget(QWidget):
         p.setBrush(QBrush(FG))
         p.drawPolygon(tri)
 
-        # ── Heading readout box (above lubber line) ──
-        hdg_font = QFont("Monospace", max(11, int(radius * 0.13)))
+        # ── Heading readout box (centered above lubber line) ──
+        hdg_font = QFont("Monospace", max(12, int(radius * 0.14)))
         hdg_font.setBold(True)
         hdg_fm = QFontMetrics(hdg_font)
         txt = f"{hdg:03.0f}\u00B0"
         fixed_tw = hdg_fm.horizontalAdvance("000\u00B0")
-        box_w = fixed_tw + 14
-        box_h = hdg_fm.height() + 6
+        box_w = fixed_tw + 16
+        box_h = hdg_fm.height() + 8
         box_x = cx - box_w / 2
-        box_y = top_y - tri_h - box_h - 2
-        p.fillRect(QRectF(box_x, box_y, box_w, box_h), POINTER_BG)
-        p.setPen(QPen(FG, 1.2))
+        box_y = top_y - tri_h - box_h - 4
+        # Opaque black background
+        p.setBrush(QBrush(QColor(10, 12, 18)))
+        p.setPen(QPen(FG, 1.0))
         p.drawRect(QRectF(box_x, box_y, box_w, box_h))
+        # Green heading text (G1000 uses green for current heading)
         p.setFont(hdg_font)
+        p.setPen(QPen(GREEN, 1.5))
         tw = hdg_fm.horizontalAdvance(txt)
         p.drawText(QPointF(cx - tw / 2,
                            box_y + (box_h + hdg_fm.ascent() - hdg_fm.descent()) / 2), txt)
+
+        # ── HDG bug readout (G1000: "HDG" white + value cyan, to the left) ──
+        bug_font = QFont("Monospace", max(8, int(radius * 0.09)))
+        bug_font.setBold(True)
+        p.setFont(bug_font)
+        bug_fm = QFontMetrics(bug_font)
+        lbl = "HDG "
+        val = f"{self._hdg_bug:03.0f}\u00B0"
+        lbl_w = bug_fm.horizontalAdvance(lbl)
+        val_w = bug_fm.horizontalAdvance(val)
+        total_w = lbl_w + val_w + 10
+        hb_h = bug_fm.height() + 4
+        hb_x = box_x - total_w - 6
+        hb_y = box_y + (box_h - hb_h) / 2
+        p.fillRect(QRectF(hb_x, hb_y, total_w, hb_h), QColor(20, 22, 30))
+        p.setPen(QPen(FG_DIM, 1.0))
+        p.drawRect(QRectF(hb_x, hb_y, total_w, hb_h))
+        text_y = hb_y + (hb_h + bug_fm.ascent() - bug_fm.descent()) / 2
+        p.setPen(QPen(FG, 1))
+        p.drawText(QPointF(hb_x + 5, text_y), lbl)
+        p.setPen(QPen(CYAN, 1))
+        p.drawText(QPointF(hb_x + 5 + lbl_w, text_y), val)
 
         p.restore()
