@@ -395,17 +395,20 @@ class SettingsDialog(QDialog):
         # Barometric
         baro_grp = QGroupBox("Barometric Altitude (QNH)")
         baro_layout = QHBoxLayout(baro_grp)
-        baro_layout.addWidget(QLabel("Sea-level pressure [Pa]:"))
+        baro_layout.addWidget(QLabel("Sea-level pressure [hPa]:"))
         self._p0_spin = QDoubleSpinBox()
-        self._p0_spin.setRange(90000, 110000)
-        self._p0_spin.setDecimals(1)
-        self._p0_spin.setSingleStep(100)
-        self._p0_spin.setValue(self.sensor.p0_pa)
-        self._p0_spin.valueChanged.connect(lambda v: setattr(self.sensor, 'p0_pa', v))
+        self._p0_spin.setRange(900.0, 1100.0)
+        self._p0_spin.setDecimals(2)
+        self._p0_spin.setSingleStep(1.0)
+        self._p0_spin.setValue(self.sensor.p0_pa / 100.0)
+        self._p0_spin.valueChanged.connect(lambda v: setattr(self.sensor, 'p0_pa', v * 100.0))
         baro_layout.addWidget(self._p0_spin)
         std_btn = QPushButton("STD 1013.25")
-        std_btn.clicked.connect(lambda: self._p0_spin.setValue(101325.0))
+        std_btn.clicked.connect(lambda: self._p0_spin.setValue(1013.25))
         baro_layout.addWidget(std_btn)
+        sensor_btn = QPushButton("Set from sensor")
+        sensor_btn.clicked.connect(self._set_qnh_from_sensor)
+        baro_layout.addWidget(sensor_btn)
         layout.addWidget(baro_grp)
 
         # Startup
@@ -471,6 +474,14 @@ class SettingsDialog(QDialog):
         layout.addWidget(keys_grp)
         layout.addStretch()
         return w
+
+    def _set_qnh_from_sensor(self):
+        """Set QNH to the current barometric pressure reading from the IMU."""
+        data = self.sensor.get_latest()
+        if data and data.pressure_pa and data.pressure_pa > 0:
+            self._p0_spin.setValue(data.pressure_pa / 100.0)
+        else:
+            self._set_status("No pressure reading available")
 
     def _on_units_changed(self, idx):
         """Unit combo changed — update PFD and refresh speed band spinboxes."""
