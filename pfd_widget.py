@@ -82,6 +82,9 @@ class PFDWidget(QWidget):
         self._valid_alt = False    # altitude (baro or GPS)
         self._valid_vsi = False    # vertical speed
 
+        # Attitude source: "accel" = raw accelerometer, "ekf" = EKF orientation
+        self._att_source = "accel"
+
         # Roll/pitch from accelerometer (gravity vector) — drift-free.
         # Light low-pass filter (alpha per sample) to smooth accel noise.
         # The Xsens MTi-G EKF drifts ~0.7°/s without GPS, so we bypass it
@@ -115,19 +118,27 @@ class PFDWidget(QWidget):
         self._auto_zero_on_start = True  # zero attitude after alignment
 
     def set_data(self, data: SensorData):
-        """Update attitude from accelerometer (drift-free), heading from EKF."""
-        # Roll/pitch: compute directly from accelerometer gravity vector.
-        # Diagnostic proved accel is rock-solid; EKF drifts ~0.7°/s.
-        if data.acc:
+        """Update attitude, heading, speed, altitude from sensor data."""
+        if self._att_source == "accel" and data.acc:
+            # Roll/pitch from accelerometer gravity vector (drift-free).
             self._valid_att = True
             ax, ay, az = data.acc
             accel_roll = math.degrees(math.atan2(ay, az))
             accel_pitch = math.degrees(math.atan2(-ax, math.sqrt(ay * ay + az * az)))
-            # Low-pass to smooth accel noise
             a = self._lp_alpha
             self._roll = a * self._roll + (1.0 - a) * (accel_roll - self._bias_roll)
             self._pitch = a * self._pitch + (1.0 - a) * (accel_pitch - self._bias_pitch)
-            # Slip/skid: lateral accel normalized by total g, bias-corrected, LP filtered
+        elif self._att_source == "ekf" and data.roll_deg is not None and data.pitch_deg is not None:
+            # Roll/pitch from EKF (fused IMU/GPS, may drift without GPS fix).
+            self._valid_att = True
+            a = self._lp_alpha
+            self._roll = a * self._roll + (1.0 - a) * (data.roll_deg - self._bias_roll)
+            self._pitch = a * self._pitch + (1.0 - a) * (data.pitch_deg - self._bias_pitch)
+
+        # Slip/skid always from accelerometer
+        if data.acc:
+            ax, ay, az = data.acc
+            a = self._lp_alpha
             g = math.sqrt(ax * ax + ay * ay + az * az)
             slip_raw = (ay / max(g, 0.1)) - self._slip_bias
             self._slip = a * self._slip + (1.0 - a) * max(-1.0, min(1.0, slip_raw * 5.0))
@@ -206,6 +217,10 @@ class PFDWidget(QWidget):
     def toggle_units(self):
         """U key: toggle US (knots/feet) vs metric (km/h/meters)."""
         self._metric = not self._metric
+
+    def set_hdg_bug(self, deg):
+        """Set heading bug to a specific value."""
+        self._hdg_bug = deg % 360
 
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Z:
@@ -636,12 +651,12 @@ class PFDWidget(QWidget):
             speed_disp = self._speed * 3.6   # m/s → km/h
             major, minor = 10, 5             # tick spacing
             span = 80.0                      # visible range
-            label = "km/h"
+            label = "GS km/h"
         else:
             speed_disp = self._speed * 1.94384  # m/s → knots
             major, minor = 10, 5
             span = 60.0                      # 60 kt visible
-            label = "KT"
+            label = "GS KT"
 
         cy = r.center().y()
         tape_w = r.width()

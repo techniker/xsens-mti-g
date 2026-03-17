@@ -528,6 +528,27 @@ class SettingsDialog(QDialog):
         w = QWidget()
         layout = QVBoxLayout(w)
 
+        # Attitude Source
+        att_grp = QGroupBox("Attitude Source")
+        att_layout = QVBoxLayout(att_grp)
+        att_hint = QLabel(
+            "Accelerometer: drift-free, noisy under vibration/acceleration. "
+            "EKF: fused IMU/GPS, smooth but may drift without GPS fix."
+        )
+        att_hint.setWordWrap(True)
+        att_hint.setStyleSheet("color: #666; font-size: 10px;")
+        att_layout.addWidget(att_hint)
+        att_row = QHBoxLayout()
+        att_row.addWidget(QLabel("Source:"))
+        self._att_combo = QComboBox()
+        self._att_combo.addItems(["Accelerometer (raw)", "EKF (fused)"])
+        self._att_combo.setCurrentIndex(0 if self.pfd._att_source == "accel" else 1)
+        self._att_combo.currentIndexChanged.connect(
+            lambda idx: setattr(self.pfd, '_att_source', "accel" if idx == 0 else "ekf"))
+        att_row.addWidget(self._att_combo)
+        att_layout.addLayout(att_row)
+        layout.addWidget(att_grp)
+
         # Units
         units_grp = QGroupBox("Units")
         units_layout = QHBoxLayout(units_grp)
