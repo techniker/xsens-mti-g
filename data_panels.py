@@ -7,9 +7,9 @@ Satellite C/N0 bar graph widget. All GNSS fields exposed.
 import math
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout,
-    QLabel, QGroupBox, QFrame, QSizePolicy,
+    QLabel, QGroupBox, QFrame, QSizePolicy, QPushButton,
 )
-from PyQt6.QtCore import Qt, QRectF, QPointF
+from PyQt6.QtCore import Qt, QRectF, QPointF, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont, QColor, QPainter, QPen, QBrush, QFontMetrics
 
 from sensors import SensorData, DeviceInfo
@@ -475,8 +475,150 @@ class GForcePanel(QWidget):
 
 # ─────────── Main data panel (flat grid, no scroll) ───────────
 
+class RepeatButton(QPushButton):
+    """Button that fires repeatedly while held, accelerating over time."""
+
+    def __init__(self, text, parent=None):
+        super().__init__(text, parent)
+        self._timer = QTimer(self)
+        self._timer.timeout.connect(self._on_tick)
+        self._tick_count = 0
+
+    def mousePressEvent(self, event):
+        super().mousePressEvent(event)
+        self._tick_count = 0
+        self._timer.start(400)  # initial delay
+
+    def mouseReleaseEvent(self, event):
+        super().mouseReleaseEvent(event)
+        self._timer.stop()
+
+    def _on_tick(self):
+        self._tick_count += 1
+        if self._tick_count > 15:
+            self._timer.setInterval(30)   # fast after ~3s
+        elif self._tick_count > 5:
+            self._timer.setInterval(80)   # medium after ~1.5s
+        else:
+            self._timer.setInterval(200)  # slow at start
+        self.clicked.emit()
+
+
+BTN_STYLE = """
+QPushButton {
+    background-color: #1a1d25; border: 1px solid #333; border-radius: 3px;
+    padding: 4px 6px; color: #ddd; font-size: 10px; font-family: monospace;
+}
+QPushButton:hover { background-color: #252830; border-color: #4CA3DD; }
+QPushButton:pressed { background-color: #4CA3DD; color: black; }
+"""
+
+
+class QuickButtonPanel(QWidget):
+    """Quick-access buttons mirroring keyboard shortcuts."""
+
+    # Signals emitted when buttons are clicked
+    level_ahrs = pyqtSignal()
+    reset_level = pyqtSignal()
+    calibrate = pyqtSignal()
+    toggle_units = pyqtSignal()
+    hdg_sync = pyqtSignal()
+    hdg_dec = pyqtSignal()
+    hdg_inc = pyqtSignal()
+    open_settings = pyqtSignal()
+    toggle_fullscreen = pyqtSignal()
+    quit_app = pyqtSignal()
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet(BTN_STYLE)
+        layout = QVBoxLayout(self)
+        layout.setSpacing(2)
+        layout.setContentsMargins(2, 0, 2, 0)
+
+        # AHRS / Calibration
+        ahrs_grp = QGroupBox("AHRS")
+        ahrs_grp.setStyleSheet(GROUP_STYLE)
+        ahrs_lay = QVBoxLayout(ahrs_grp)
+        ahrs_lay.setSpacing(2)
+        ahrs_lay.setContentsMargins(4, 14, 4, 4)
+
+        btn_level = QPushButton("Level [Z]")
+        btn_level.setToolTip("Set current attitude as level reference")
+        btn_level.clicked.connect(self.level_ahrs.emit)
+        ahrs_lay.addWidget(btn_level)
+
+        btn_reset = QPushButton("Reset Level [R]")
+        btn_reset.setToolTip("Clear level bias")
+        btn_reset.clicked.connect(self.reset_level.emit)
+        ahrs_lay.addWidget(btn_reset)
+
+        btn_cal = QPushButton("Calibrate [C]")
+        btn_cal.setToolTip("Orientation reset — keep device stationary")
+        btn_cal.clicked.connect(self.calibrate.emit)
+        ahrs_lay.addWidget(btn_cal)
+
+        layout.addWidget(ahrs_grp)
+
+        # Heading bug
+        hdg_grp = QGroupBox("HDG Bug")
+        hdg_grp.setStyleSheet(GROUP_STYLE)
+        hdg_lay = QVBoxLayout(hdg_grp)
+        hdg_lay.setSpacing(2)
+        hdg_lay.setContentsMargins(4, 14, 4, 4)
+
+        btn_sync = QPushButton("Sync [H]")
+        btn_sync.setToolTip("Set heading bug to current heading")
+        btn_sync.clicked.connect(self.hdg_sync.emit)
+        hdg_lay.addWidget(btn_sync)
+
+        hdg_row = QHBoxLayout()
+        hdg_row.setSpacing(2)
+        btn_dec = RepeatButton("\u2212 1°")
+        btn_dec.setToolTip("Heading bug \u22121° (hold to repeat)")
+        btn_dec.clicked.connect(self.hdg_dec.emit)
+        hdg_row.addWidget(btn_dec)
+        btn_inc = RepeatButton("+ 1°")
+        btn_inc.setToolTip("Heading bug +1° (hold to repeat)")
+        btn_inc.clicked.connect(self.hdg_inc.emit)
+        hdg_row.addWidget(btn_inc)
+        hdg_lay.addLayout(hdg_row)
+
+        layout.addWidget(hdg_grp)
+
+        # Display / App
+        app_grp = QGroupBox("Display")
+        app_grp.setStyleSheet(GROUP_STYLE)
+        app_lay = QVBoxLayout(app_grp)
+        app_lay.setSpacing(2)
+        app_lay.setContentsMargins(4, 14, 4, 4)
+
+        btn_units = QPushButton("Units [U]")
+        btn_units.setToolTip("Toggle US / Metric")
+        btn_units.clicked.connect(self.toggle_units.emit)
+        app_lay.addWidget(btn_units)
+
+        btn_settings = QPushButton("Settings [M]")
+        btn_settings.setToolTip("Open settings dialog")
+        btn_settings.clicked.connect(self.open_settings.emit)
+        app_lay.addWidget(btn_settings)
+
+        btn_fs = QPushButton("Fullscreen [F]")
+        btn_fs.setToolTip("Toggle fullscreen")
+        btn_fs.clicked.connect(self.toggle_fullscreen.emit)
+        app_lay.addWidget(btn_fs)
+
+        btn_quit = QPushButton("Quit [Q]")
+        btn_quit.setToolTip("Exit application")
+        btn_quit.clicked.connect(self.quit_app.emit)
+        app_lay.addWidget(btn_quit)
+
+        layout.addWidget(app_grp)
+        layout.addStretch()
+
+
 class DataPanelWidget(QWidget):
-    """Horizontal bottom strip: 4 panel columns + satellite bar graph."""
+    """Horizontal bottom strip: quick buttons + 4 panel columns + satellite bar graph."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -493,6 +635,10 @@ class DataPanelWidget(QWidget):
         root = QHBoxLayout()
         root.setSpacing(2)
         outer.addLayout(root, 1)
+
+        # Quick-access buttons (leftmost column)
+        self.button_panel = QuickButtonPanel()
+        root.addWidget(self.button_panel, 0)
 
         # Column 1: device + status
         col1 = QVBoxLayout()

@@ -66,6 +66,19 @@ class MainWindow(QMainWindow):
         layout.addWidget(self.data_panel, 3)
         self.data_panel.hide()
 
+        # Connect quick-access button signals
+        bp = self.data_panel.button_panel
+        bp.level_ahrs.connect(self.pfd.zero_attitude)
+        bp.reset_level.connect(self.pfd.reset_zero)
+        bp.calibrate.connect(self._calibrate)
+        bp.toggle_units.connect(self.pfd.toggle_units)
+        bp.hdg_sync.connect(lambda: self.pfd.set_hdg_bug(self.pfd._heading))
+        bp.hdg_dec.connect(lambda: self.pfd.set_hdg_bug((self.pfd._hdg_bug - 1) % 360))
+        bp.hdg_inc.connect(lambda: self.pfd.set_hdg_bug((self.pfd._hdg_bug + 1) % 360))
+        bp.open_settings.connect(self._show_settings)
+        bp.toggle_fullscreen.connect(self._toggle_fullscreen)
+        bp.quit_app.connect(self.close)
+
         # Status bar (hidden by default)
         self.status_bar = QStatusBar()
         self.status_bar.setStyleSheet(
