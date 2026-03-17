@@ -218,6 +218,10 @@ class PFDWidget(QWidget):
         """U key: toggle US (knots/feet) vs metric (km/h/meters)."""
         self._metric = not self._metric
 
+    def set_hdg_bug(self, deg):
+        """Set heading bug to a specific value."""
+        self._hdg_bug = deg % 360
+
     def keyPressEvent(self, event):
         if event.key() == Qt.Key.Key_Z:
             self.zero_attitude()
