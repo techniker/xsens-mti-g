@@ -293,6 +293,12 @@ class DeviceInfo:
     error_mode: int = 0
     location_id: int = 0
     alignment_rotation: Tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0)
+    object_alignment: Tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0)
+    transmit_delay: int = 0
+    sync_out_mode: int = 0
+    sync_out_skip_factor: int = 0
+    sync_out_offset: int = 0
+    sync_out_pulse_width: int = 0
 
 
 # ─────────────────────── Parser ───────────────────────
@@ -449,16 +455,16 @@ def _read_full_config(ser, info: DeviceInfo):
     if sc and len(sc) >= 2:
         info.current_scenario = struct.unpack('!H', sc[:2])[0]
 
-    # Available scenarios (23 bytes each: U16 type + U8 version + 20 char label)
+    # Available scenarios (22 bytes each: U16 type + 20 char label)
     raw = _quick_ack(ser, MID.ReqAvailableScenarios)
     if raw:
         info.available_scenarios = []
         o = 0
-        while o + 23 <= len(raw):
-            st = struct.unpack_from('!HB', raw, o)
-            label = raw[o + 3:o + 23].decode('ascii', errors='ignore').strip('\x00 ')
-            info.available_scenarios.append(FilterProfile(st[0], st[1], label))
-            o += 23
+        while o + 22 <= len(raw):
+            profile_type = struct.unpack_from('!H', raw, o)[0]
+            label = raw[o + 2:o + 22].decode('ascii', errors='ignore').strip('\x00 ')
+            info.available_scenarios.append(FilterProfile(profile_type, 0, label))
+            o += 22
 
     # GPS Lever Arm (MTi-G specific)
     la = _quick_ack(ser, MID.SetLeverArmGPS)
@@ -494,6 +500,28 @@ def _read_full_config(ser, info: DeviceInfo):
     ar = _quick_ack(ser, MID.SetAlignmentRotation)
     if ar and len(ar) >= 16:
         info.alignment_rotation = struct.unpack('!ffff', ar[:16])
+
+    # Object Alignment (quaternion)
+    oa = _quick_ack(ser, MID.SetObjectAlignment)
+    if oa and len(oa) >= 16:
+        info.object_alignment = struct.unpack('!ffff', oa[:16])
+
+    # Transmit Delay
+    td = _quick_ack(ser, MID.SetTransmitDelay)
+    if td and len(td) >= 2:
+        info.transmit_delay = struct.unpack('!H', td[:2])[0]
+
+    # Sync Out Settings — response format varies by firmware;
+    # try block read (12 bytes: mode U16, skip U16, offset U32, pulse U32)
+    so = _quick_ack(ser, MID.SetSyncOutSettings)
+    if so:
+        if len(so) >= 12:
+            info.sync_out_mode = struct.unpack_from('!H', so, 0)[0]
+            info.sync_out_skip_factor = struct.unpack_from('!H', so, 2)[0]
+            info.sync_out_offset = struct.unpack_from('!I', so, 4)[0]
+            info.sync_out_pulse_width = struct.unpack_from('!I', so, 8)[0]
+        elif len(so) >= 2:
+            info.sync_out_mode = struct.unpack_from('!H', so, 0)[0]
 
 
 # ─────────────────────── Sensor reader thread ───────────────────────

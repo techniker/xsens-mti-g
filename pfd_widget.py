@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """
-G1000-style Primary Flight Display (PFD) Widget
-Custom-painted Qt widget aligned to the Garmin G1000 Pilot's Guide
-(190-00498-08 Rev A):
+Primary Flight Display (PFD) Widget for Xsens MTi AHRS data.
   - Attitude indicator (sky/ground, pitch ladder with 2.5° fine marks, bank arc)
   - Speed tape (scrolling, left side, color bands, rolling pointer)
   - Altitude tape (scrolling, right side, rolling pointer)
@@ -23,7 +21,7 @@ from PyQt6.QtGui import (
 from sensors import SensorData
 
 
-# ─────────── Color Palette (G1000-inspired) ───────────
+# ─────────── Color Palette ───────────
 SKY      = QColor(0x4C, 0xA3, 0xDD)
 GROUND   = QColor(0xB9, 0x7A, 0x56)
 PANEL_BG = QColor(0x0A, 0x0C, 0x10)
@@ -47,7 +45,7 @@ SPD_VNE = 163   # never exceed (red line)
 
 
 class PFDWidget(QWidget):
-    """Full Airbus-style PFD rendered via QPainter.
+    """Full PFD rendered via QPainter.
     Displays AHRS data directly — no additional filtering."""
 
     def __init__(self, parent=None):
@@ -229,7 +227,7 @@ class PFDWidget(QWidget):
     # ─────────── Layout geometry ───────────
 
     def _layout(self):
-        """Compute sub-regions based on widget size (G1000 proportions).
+        """Compute sub-regions based on widget size.
         Attitude and tapes use full height; compass rose overlays the lower third."""
         w, h = self.width(), self.height()
         spd_w = max(80, int(w * 0.085))
@@ -388,7 +386,7 @@ class PFDWidget(QWidget):
             self._draw_fpv(p, r, pitch_px_per_deg)
 
     def _draw_pitch_ladder(self, p: QPainter, px_per_deg, pitch_shift, size):
-        """G1000 pitch ladder: 10° major with labels, 5° minor, 2.5° minor
+        """Pitch ladder: 10° major with labels, 5° minor, 2.5° minor
         between ±20° of horizon."""
         font = QFont("Monospace", max(9, int(size * 0.022)))
         font.setBold(True)
@@ -396,7 +394,7 @@ class PFDWidget(QWidget):
         fm = QFontMetrics(font)
 
         # Build list of pitch marks: 10° major, 5° standard minor,
-        # 2.5° fine minor between -20° and +20° (per G1000 guide p.52)
+        # 2.5° fine minor between -20° and +20°
         marks = []
         for deg10 in range(-80, 81, 10):
             if deg10 != 0:
@@ -440,7 +438,7 @@ class PFDWidget(QWidget):
 
     def _draw_bank_arc(self, p: QPainter, r: QRect):
         cx = r.center().x()
-        # G1000: arc sits near the top of the attitude area, large radius
+        # Arc sits near the top of the attitude area, large radius
         radius = r.width() * 0.42
         arc_cy = r.top() + radius + 14  # push arc center down just enough to show the top
 
@@ -452,7 +450,7 @@ class PFDWidget(QWidget):
         arc_rect = QRectF(cx - radius, arc_cy - radius, radius * 2, radius * 2)
         p.drawArc(arc_rect, 30 * 16, 120 * 16)
 
-        # Tick marks (G1000: 10, 20, 30, 45, 60)
+        # Tick marks at 10, 20, 30, 45, 60°
         for ang in [-60, -45, -30, -20, -10, 10, 20, 30, 45, 60]:
             if abs(ang) in (30, 60):
                 tick_len, pen_w = radius * 0.06, 2.0
@@ -469,7 +467,7 @@ class PFDWidget(QWidget):
             p.setPen(QPen(FG, pen_w))
             p.drawLine(QPointF(x1, y1), QPointF(x2, y2))
 
-        # Top index triangle (fixed at 0°, G1000: small filled white triangle)
+        # Top index triangle (fixed at 0°, small filled white triangle)
         tri_h = radius * 0.04
         tri_w = radius * 0.03
         top_y = arc_cy - radius
@@ -555,10 +553,9 @@ class PFDWidget(QWidget):
                            x_text: float):
         """Rolling drum digit display — right-aligned, no leading zeros.
 
-        Every digit scrolls proportionally.  Higher digits move slowly;
-        the ones digit scrolls at full speed — like a mechanical counter.
-        Digits are positioned from the right so suppressed leading zeros
-        don't leave gaps.
+        Odometer-style: the ones digit scrolls freely; higher digits only
+        begin to roll when the digit directly below passes through 9→0,
+        so left-hand digits stay crisp and readable at all times.
         """
         font = QFont("Monospace", font_size)
         font.setBold(True)
@@ -576,22 +573,34 @@ class PFDWidget(QWidget):
         p.setPen(QPen(FG, 1.5))
         baseline = cy + (fm.ascent() - fm.descent()) / 2.0
 
+        # Pre-compute per-position digit and cascade fraction.
+        # Ones scroll freely; each higher position only scrolls when the
+        # position below is at 9 and rolling over (mechanical odometer).
+        digits = []
+        prev_frac = 0.0
         for position in range(num_digits):
-            # position 0 = ones, 1 = tens, …
             place = 10 ** position
-
             digit_val = (val / place) % 10.0
             digit = int(digit_val) % 10
-            frac = digit_val - int(digit_val)
 
-            # Suppress leading zeros (never suppress ones digit).
-            # A digit is a leading zero if the entire value is below this
-            # place — the fractional scroll is irrelevant for that check.
-            if position > 0 and val < place:
-                continue
+            if position == 0:
+                frac = digit_val - int(digit_val)
+            else:
+                # Only scroll when the digit below is 9 and rolling
+                lower_digit = digits[position - 1][0]
+                frac = prev_frac if lower_digit == 9 else 0.0
 
             # Smoothstep easing for fluid motion.
             frac = frac * frac * (3.0 - 2.0 * frac)
+            digits.append((digit, frac))
+            prev_frac = frac
+
+        for position, (digit, frac) in enumerate(digits):
+            place = 10 ** position
+
+            # Suppress leading zeros (never suppress ones digit).
+            if position > 0 and val < place:
+                continue
 
             next_d = (digit + 1) % 10
             prev_d = (digit - 1) % 10
@@ -630,7 +639,7 @@ class PFDWidget(QWidget):
             label = "km/h"
         else:
             speed_disp = self._speed * 1.94384  # m/s → knots
-            major, minor = 10, 5             # G1000: major 10, minor 5
+            major, minor = 10, 5
             span = 60.0                      # 60 kt visible
             label = "KT"
 
@@ -638,7 +647,7 @@ class PFDWidget(QWidget):
         tape_w = r.width()
         px_per_unit = r.height() / span
 
-        # ── G1000-style color bands (right edge of tape) ──
+        # ── V-speed color bands (right edge of tape) ──
         # V-speeds are stored in knots — convert to display units
         spd_k = 3.6 / 1.94384 if self._metric else 1.0  # kt → km/h or kt → kt
         v_vso = SPD_VSO * spd_k
@@ -856,7 +865,7 @@ class PFDWidget(QWidget):
         p.drawText(QPointF(x0 + 4, r.bottom() - 4), label)
         p.restore()
 
-    # ─────────── Vertical Speed Indicator (G1000-style) ───────────
+    # ─────────── Vertical Speed Indicator ───────────
 
     def _draw_vsi(self, p: QPainter, r: QRect):
         p.save()
@@ -879,7 +888,7 @@ class PFDWidget(QWidget):
             ticks = [100, 500, 1000, 1500, 2000]
             label_ticks = {500: ".5", 1000: "1", 1500: "1.5", 2000: "2"}
 
-        # Non-linear scale: compress outer range (G1000 style)
+        # Non-linear scale: compress outer range
         def vsi_to_y(v):
             """Map VSI value to y, with compression above half-scale."""
             half = max_val / 2.0
@@ -912,7 +921,7 @@ class PFDWidget(QWidget):
                         txt = label_ticks[tv]
                         p.drawText(QPointF(x0 + tw + 2, y + fm.ascent() / 3), txt)
 
-        # Pointer with value readout (G1000: digits appear when > 100 fpm)
+        # Pointer with value readout (digits appear when > 100 fpm)
         clamped = max(-max_val, min(max_val, vsi_disp))
         ptr_y = vsi_to_y(clamped)
         show_val = self._metric and abs(vsi_disp) >= 0.5 or \
@@ -950,7 +959,7 @@ class PFDWidget(QWidget):
 
         p.restore()
 
-    # ─────────── Compass Rose (G1000 360° HSI style) ───────────
+    # ─────────── Compass Rose (360° HSI) ───────────
 
     def _draw_compass_rose(self, p: QPainter, r: QRect):
         p.save()
@@ -1048,7 +1057,7 @@ class PFDWidget(QWidget):
         p.drawPolygon(bug_shape)
         p.restore()
 
-        # ── Aircraft symbol (fixed, white, G1000-style top-down airplane) ──
+        # ── Aircraft symbol (fixed, white, top-down airplane) ──
         s = radius * 0.10  # scale unit
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QBrush(FG))
@@ -1101,14 +1110,14 @@ class PFDWidget(QWidget):
         p.setBrush(QBrush(QColor(10, 12, 18)))
         p.setPen(QPen(FG, 1.0))
         p.drawRect(QRectF(box_x, box_y, box_w, box_h))
-        # Green heading text (G1000 uses green for current heading)
+        # Green heading text
         p.setFont(hdg_font)
         p.setPen(QPen(GREEN, 1.5))
         tw = hdg_fm.horizontalAdvance(txt)
         p.drawText(QPointF(cx - tw / 2,
                            box_y + (box_h + hdg_fm.ascent() - hdg_fm.descent()) / 2), txt)
 
-        # ── HDG bug readout (G1000: "HDG" white + value cyan, to the left) ──
+        # ── HDG bug readout ("HDG" white + value cyan, to the left) ──
         bug_font = QFont("Monospace", max(8, int(radius * 0.09)))
         bug_font.setBold(True)
         p.setFont(bug_font)
