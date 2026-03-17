@@ -361,16 +361,25 @@ class SettingsDialog(QDialog):
 
         # In-run Compass Calibration
         icc_grp = QGroupBox("In-run Compass Calibration (ICC)")
-        icc_layout = QHBoxLayout(icc_grp)
+        icc_layout = QVBoxLayout(icc_grp)
+        icc_hint = QLabel(
+            "Slowly rotate the device through all orientations (yaw, pitch, roll) "
+            "covering as many headings as possible. Continue for at least 30–60 seconds. "
+            "Press Start, perform the rotation, then Store & Stop to save the calibration."
+        )
+        icc_hint.setWordWrap(True)
+        icc_layout.addWidget(icc_hint)
+        btn_row = QHBoxLayout()
         start_btn = QPushButton("Start ICC")
         start_btn.clicked.connect(lambda: self._set_status(self.sensor.send_icc_command(0)))
-        icc_layout.addWidget(start_btn)
+        btn_row.addWidget(start_btn)
         stop_btn = QPushButton("Stop (discard)")
         stop_btn.clicked.connect(lambda: self._set_status(self.sensor.send_icc_command(1)))
-        icc_layout.addWidget(stop_btn)
+        btn_row.addWidget(stop_btn)
         store_btn = QPushButton("Store & Stop")
         store_btn.clicked.connect(lambda: self._set_status(self.sensor.send_icc_command(2)))
-        icc_layout.addWidget(store_btn)
+        btn_row.addWidget(store_btn)
+        icc_layout.addLayout(btn_row)
         layout.addWidget(icc_grp)
 
         layout.addStretch()
