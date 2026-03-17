@@ -7,10 +7,10 @@ Full-featured PFD (Primary Flight Display) driven by an Xsens MTi-G IMU/GPS over
 
 ## Features
 
-- **Attitude indicator** — roll/pitch derived directly from accelerometer (bypasses EKF drift), pitch ladder with 2.5° fine marks
+- **Attitude indicator** — selectable source: raw accelerometer (drift-free) or EKF (fused IMU/GPS). Pitch ladder with 2.5° fine marks
 - **Bank arc** — slip/skid indicator, auto-calibrated during AHRS alignment
-- **Speed tape** — ground speed with rolling drum digits, LP filtering, noise squelch, color bands (white/green/yellow arcs, red Vne line, barber-pole overspeed)
-- **Altitude tape** — barometric altitude with rolling drum digits, GPS altitude fallback
+- **Speed tape** — GPS ground speed (labeled GS) with rolling drum digits, LP filtering, noise squelch, V-speed color bands (white/green/yellow arcs, red Vne line, barber-pole overspeed)
+- **Altitude tape** — barometric altitude (QNH in hPa) with rolling drum digits, GPS altitude fallback
 - **Compass rose** — rotating 360° HSI with upright labels, aircraft symbol, heading bug with notch marker
 - **Vertical speed indicator** — non-linear scale with value readout above 100 fpm
 - **Flight path vector** (FPV / velocity vector)
@@ -18,7 +18,7 @@ Full-featured PFD (Primary Flight Display) driven by an Xsens MTi-G IMU/GPS over
 - **Fail flags** — red X overlay when data is unavailable (ATT, SPD, ALT, V/S, HDG)
 - **AHRS alignment** — startup initialization with progress bar, auto-zero attitude and slip/skid
 - **Data panels** — raw sensor readouts (accelerometer, gyroscope, magnetometer, GPS, pressure, satellite C/N0 bar graph, G-force), toggle with D key
-- **Settings dialog** — QNH, units, V-speed bands, auto-zero, GPS lever arm, magnetic declination, sensor alignment, in-run compass calibration
+- **Settings dialog** — full device configuration: attitude source, QNH (with set-from-sensor), units, V-speed bands, auto-zero, filter scenario, gravity magnitude, processing flags, sensor/object alignment, GPS lever arm, magnetic declination, in-run compass calibration, UTC time, transmit delay, sync-out, baudrate, sample rate, error mode, location ID, SetNoRotation
 - **Persistent settings** — all user preferences saved to `config.json` and restored on next launch
 - **Unit toggle** — knots/feet/fpm or km/h/meters/m/s (V-speed bands convert dynamically)
 
