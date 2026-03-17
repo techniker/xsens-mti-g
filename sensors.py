@@ -293,6 +293,12 @@ class DeviceInfo:
     error_mode: int = 0
     location_id: int = 0
     alignment_rotation: Tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0)
+    object_alignment: Tuple[float, float, float, float] = (1.0, 0.0, 0.0, 0.0)
+    transmit_delay: int = 0
+    sync_out_mode: int = 0
+    sync_out_skip_factor: int = 0
+    sync_out_offset: int = 0
+    sync_out_pulse_width: int = 0
 
 
 # ─────────────────────── Parser ───────────────────────
@@ -494,6 +500,28 @@ def _read_full_config(ser, info: DeviceInfo):
     ar = _quick_ack(ser, MID.SetAlignmentRotation)
     if ar and len(ar) >= 16:
         info.alignment_rotation = struct.unpack('!ffff', ar[:16])
+
+    # Object Alignment (quaternion)
+    oa = _quick_ack(ser, MID.SetObjectAlignment)
+    if oa and len(oa) >= 16:
+        info.object_alignment = struct.unpack('!ffff', oa[:16])
+
+    # Transmit Delay
+    td = _quick_ack(ser, MID.SetTransmitDelay)
+    if td and len(td) >= 2:
+        info.transmit_delay = struct.unpack('!H', td[:2])[0]
+
+    # Sync Out Settings — response format varies by firmware;
+    # try block read (12 bytes: mode U16, skip U16, offset U32, pulse U32)
+    so = _quick_ack(ser, MID.SetSyncOutSettings)
+    if so:
+        if len(so) >= 12:
+            info.sync_out_mode = struct.unpack_from('!H', so, 0)[0]
+            info.sync_out_skip_factor = struct.unpack_from('!H', so, 2)[0]
+            info.sync_out_offset = struct.unpack_from('!I', so, 4)[0]
+            info.sync_out_pulse_width = struct.unpack_from('!I', so, 8)[0]
+        elif len(so) >= 2:
+            info.sync_out_mode = struct.unpack_from('!H', so, 0)[0]
 
 
 # ─────────────────────── Sensor reader thread ───────────────────────

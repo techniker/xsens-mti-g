@@ -112,6 +112,7 @@ class SettingsDialog(QDialog):
             ("Baudrate", f"{Baudrates._map.get(i.baudrate_id, '?')} bps (ID 0x{i.baudrate_id:02X})"),
             ("Location ID", f"{i.location_id}"),
             ("Error Mode", f"0x{i.error_mode:04X}"),
+            ("Transmit Delay", f"{i.transmit_delay}"),
         ]
         for row, (label, value) in enumerate(fields):
             grid.addWidget(QLabel(label), row, 0)
@@ -124,6 +125,8 @@ class SettingsDialog(QDialog):
         cfg_grid.setSpacing(3)
         period_hz = 115200.0 / i.period if i.period > 0 else 0
         eff_hz = period_hz / (i.skip_factor + 1) if i.skip_factor >= 0 else period_hz
+        q = i.alignment_rotation
+        oq = i.object_alignment
         cfg_fields = [
             ("Output Mode", f"0x{i.output_mode:04X}"),
             ("Output Settings", f"0x{i.output_settings:08X}"),
@@ -132,6 +135,16 @@ class SettingsDialog(QDialog):
             ("Period", f"{i.period} (= {period_hz:.1f} Hz)"),
             ("Skip Factor", f"{i.skip_factor} (effective {eff_hz:.1f} Hz)"),
             ("Processing Flags", f"0x{i.processing_flags:02X}"),
+            ("Filter Scenario", f"{i.current_scenario}"),
+            ("Gravity Magnitude", f"{i.gravity_magnitude:.5f} m/s²"),
+            ("Sensor Alignment", f"({q[0]:.4f}, {q[1]:.4f}, {q[2]:.4f}, {q[3]:.4f})"),
+            ("Object Alignment", f"({oq[0]:.4f}, {oq[1]:.4f}, {oq[2]:.4f}, {oq[3]:.4f})"),
+            ("GPS Lever Arm", f"({i.lever_arm_gps[0]:.3f}, {i.lever_arm_gps[1]:.3f}, {i.lever_arm_gps[2]:.3f}) m"),
+            ("Magnetic Declination", f"{i.magnetic_declination:.3f}°"),
+            ("Sync Out Mode", f"0x{i.sync_out_mode:04X}"),
+            ("Sync Out Skip", f"{i.sync_out_skip_factor}"),
+            ("Sync Out Offset", f"{i.sync_out_offset} ns"),
+            ("Sync Out Pulse Width", f"{i.sync_out_pulse_width} ns"),
         ]
         for row, (label, value) in enumerate(cfg_fields):
             cfg_grid.addWidget(QLabel(label), row, 0)
@@ -191,6 +204,56 @@ class SettingsDialog(QDialog):
         baud_layout.addWidget(apply_baud_btn)
         layout.addWidget(baud_grp)
 
+        # Transmit Delay
+        td_grp = QGroupBox("Transmit Delay")
+        td_layout = QHBoxLayout(td_grp)
+        td_layout.addWidget(QLabel("Delay (RS232 units):"))
+        self._td_spin = QSpinBox()
+        self._td_spin.setRange(0, 65535)
+        self._td_spin.setValue(self.info.transmit_delay)
+        td_layout.addWidget(self._td_spin)
+        apply_td = QPushButton("Apply")
+        apply_td.clicked.connect(lambda: (
+            self.sensor.apply_setting(MID.SetTransmitDelay, struct.pack('!H', self._td_spin.value())),
+            self._set_status("Transmit delay sent"),
+        ))
+        td_layout.addWidget(apply_td)
+        layout.addWidget(td_grp)
+
+        # Sync Out Settings
+        sync_grp = QGroupBox("Sync Out")
+        sync_grid = QGridLayout(sync_grp)
+        sync_grid.setSpacing(4)
+
+        sync_grid.addWidget(QLabel("Mode:"), 0, 0)
+        self._sync_mode = QSpinBox()
+        self._sync_mode.setRange(0, 65535)
+        self._sync_mode.setValue(self.info.sync_out_mode)
+        sync_grid.addWidget(self._sync_mode, 0, 1)
+
+        sync_grid.addWidget(QLabel("Skip factor:"), 0, 2)
+        self._sync_skip = QSpinBox()
+        self._sync_skip.setRange(0, 65535)
+        self._sync_skip.setValue(self.info.sync_out_skip_factor)
+        sync_grid.addWidget(self._sync_skip, 0, 3)
+
+        sync_grid.addWidget(QLabel("Offset (ns):"), 1, 0)
+        self._sync_offset = QSpinBox()
+        self._sync_offset.setRange(0, 2147483647)
+        self._sync_offset.setValue(self.info.sync_out_offset)
+        sync_grid.addWidget(self._sync_offset, 1, 1)
+
+        sync_grid.addWidget(QLabel("Pulse width (ns):"), 1, 2)
+        self._sync_pw = QSpinBox()
+        self._sync_pw.setRange(0, 2147483647)
+        self._sync_pw.setValue(self.info.sync_out_pulse_width)
+        sync_grid.addWidget(self._sync_pw, 1, 3)
+
+        apply_sync = QPushButton("Apply")
+        apply_sync.clicked.connect(self._apply_sync_out)
+        sync_grid.addWidget(apply_sync, 2, 0, 1, 4)
+        layout.addWidget(sync_grp)
+
         layout.addStretch()
         return w
 
@@ -213,6 +276,15 @@ class SettingsDialog(QDialog):
         self.sensor.apply_setting(MID.SetBaudrate, struct.pack('!B', bid))
         bps = Baudrates._map.get(bid, '?')
         self._set_status(f"Baudrate {bps} sent — reconnect with new baud rate")
+
+    def _apply_sync_out(self):
+        data = struct.pack('!HHII',
+                           self._sync_mode.value(),
+                           self._sync_skip.value(),
+                           self._sync_offset.value(),
+                           self._sync_pw.value())
+        self.sensor.apply_setting(MID.SetSyncOutSettings, data)
+        self._set_status("Sync out settings sent")
 
     # ─── Filter tab ───
     def _build_filter_tab(self):
@@ -281,6 +353,43 @@ class SettingsDialog(QDialog):
         align_grid.addWidget(apply_align, 2, 0, 1, 4)
         layout.addWidget(align_grp)
 
+        # Processing Flags
+        pf_grp = QGroupBox("Processing Flags")
+        pf_layout = QHBoxLayout(pf_grp)
+        pf_layout.addWidget(QLabel("Flags (hex):"))
+        self._pf_spin = QSpinBox()
+        self._pf_spin.setRange(0, 255)
+        self._pf_spin.setDisplayIntegerBase(16)
+        self._pf_spin.setPrefix("0x")
+        self._pf_spin.setValue(self.info.processing_flags)
+        pf_layout.addWidget(self._pf_spin)
+        apply_pf = QPushButton("Apply")
+        apply_pf.clicked.connect(lambda: (
+            self.sensor.apply_setting(MID.SetProcessingFlags, struct.pack('!H', self._pf_spin.value())),
+            self._set_status("Processing flags sent"),
+        ))
+        pf_layout.addWidget(apply_pf)
+        layout.addWidget(pf_grp)
+
+        # Object Alignment
+        obj_grp = QGroupBox("Object Alignment Rotation (quaternion)")
+        obj_grid = QGridLayout(obj_grp)
+        oq = self.info.object_alignment
+        self._obj_q = []
+        for i, (label, val) in enumerate([("w", oq[0]), ("x", oq[1]), ("y", oq[2]), ("z", oq[3])]):
+            obj_grid.addWidget(QLabel(label), 0, i)
+            spin = QDoubleSpinBox()
+            spin.setRange(-1.0, 1.0)
+            spin.setDecimals(6)
+            spin.setSingleStep(0.001)
+            spin.setValue(val)
+            obj_grid.addWidget(spin, 1, i)
+            self._obj_q.append(spin)
+        apply_obj = QPushButton("Apply")
+        apply_obj.clicked.connect(self._apply_object_alignment)
+        obj_grid.addWidget(apply_obj, 2, 0, 1, 4)
+        layout.addWidget(obj_grp)
+
         # Accel smoothing (display-side)
         smooth_grp = QGroupBox("Accelerometer Smoothing (display)")
         smooth_layout = QHBoxLayout(smooth_grp)
@@ -308,6 +417,11 @@ class SettingsDialog(QDialog):
         qw, qx, qy, qz = [s.value() for s in self._align_q]
         self.sensor.apply_setting(MID.SetAlignmentRotation, struct.pack('!ffff', qw, qx, qy, qz))
         self._set_status("Alignment rotation sent")
+
+    def _apply_object_alignment(self):
+        qw, qx, qy, qz = [s.value() for s in self._obj_q]
+        self.sensor.apply_setting(MID.SetObjectAlignment, struct.pack('!ffff', qw, qx, qy, qz))
+        self._set_status("Object alignment sent")
 
     def _on_smooth_changed(self, value):
         alpha = value / 100.0
@@ -381,6 +495,30 @@ class SettingsDialog(QDialog):
         btn_row.addWidget(store_btn)
         icc_layout.addLayout(btn_row)
         layout.addWidget(icc_grp)
+
+        # UTC Time
+        utc_grp = QGroupBox("UTC Time")
+        utc_layout = QVBoxLayout(utc_grp)
+        utc_hint = QLabel(
+            "Adjust the device's UTC clock offset in nanoseconds. "
+            "Positive values advance the clock, negative values retard it."
+        )
+        utc_hint.setWordWrap(True)
+        utc_layout.addWidget(utc_hint)
+        utc_row = QHBoxLayout()
+        utc_row.addWidget(QLabel("Offset [ns]:"))
+        self._utc_offset_spin = QSpinBox()
+        self._utc_offset_spin.setRange(-2147483647, 2147483647)
+        self._utc_offset_spin.setValue(0)
+        utc_row.addWidget(self._utc_offset_spin)
+        apply_utc = QPushButton("Adjust UTC")
+        apply_utc.clicked.connect(lambda: (
+            self.sensor.apply_setting(MID.AdjustUTCTime, struct.pack('!i', self._utc_offset_spin.value())),
+            self._set_status("UTC time adjustment sent"),
+        ))
+        utc_row.addWidget(apply_utc)
+        utc_layout.addLayout(utc_row)
+        layout.addWidget(utc_grp)
 
         layout.addStretch()
         return w
@@ -541,6 +679,13 @@ class SettingsDialog(QDialog):
         reset_btn = QPushButton("Reset Level (R)")
         reset_btn.clicked.connect(self.pfd.reset_zero)
         ori_layout.addWidget(reset_btn)
+        norot_btn = QPushButton("Set No Rotation")
+        norot_btn.setToolTip("Tell the filter the device is stationary — improves convergence")
+        norot_btn.clicked.connect(lambda: (
+            self.sensor.apply_setting(MID.SetNoRotation, struct.pack('!H', 0x0000)),
+            self._set_status("SetNoRotation sent"),
+        ))
+        ori_layout.addWidget(norot_btn)
         layout.addWidget(ori_grp)
 
         # Device commands
