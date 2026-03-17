@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Airbus PFD - Primary Flight Display for Xsens MTi
+AHRS - Primary Flight Display for Xsens MTi
 Bjoern Heller <tec@sixtopia.net>
 
 Usage:
@@ -12,9 +12,13 @@ Keys:
     C   - Calibrate (orientation reset, keep stationary)
     U   - Toggle units: US (knots/feet/fpm) vs Metric (km/h/m/m/s)
     D   - Toggle debug panels (data readouts + status bar)
+    H   - Sync heading bug to current heading
+    +/= - Heading bug +1°
+    -   - Heading bug -1°
     M   - Settings menu
     F   - Toggle fullscreen
     Q   - Quit
+    Esc - Quit
 """
 
 import sys
@@ -42,7 +46,7 @@ class MainWindow(QMainWindow):
     def __init__(self, sensor: XSensSensor):
         super().__init__()
         self.sensor = sensor
-        self.setWindowTitle("Airbus PFD - Xsens MTi")
+        self.setWindowTitle("AHRS - Xsens MTi")
         self.setStyleSheet("background-color: #0A0C10; color: white;")
 
         # Main layout: PFD on top (wide), data strip below
