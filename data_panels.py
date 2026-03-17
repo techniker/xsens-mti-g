@@ -17,23 +17,23 @@ from sensors import SensorData, DeviceInfo
 
 # ─────────── Styles ───────────
 
-LABEL_STYLE = "color: #777; font-size: 10px;"
-VALUE_STYLE = "color: #ddd; font-size: 11px; font-family: monospace; font-weight: bold;"
+LABEL_STYLE = "color: #777; font-size: 9px;"
+VALUE_STYLE = "color: #ddd; font-size: 10px; font-family: monospace; font-weight: bold;"
 GROUP_STYLE = """
 QGroupBox {
     border: 1px solid #282a30;
     border-radius: 3px;
-    margin-top: 6px;
-    padding: 10px 4px 2px 4px;
+    margin-top: 4px;
+    padding: 8px 3px 1px 3px;
     background-color: #111318;
 }
 QGroupBox::title {
     subcontrol-origin: margin;
-    left: 6px;
-    padding: 0 3px;
+    left: 4px;
+    padding: 0 2px;
     color: #4CA3DD;
     font-weight: bold;
-    font-size: 10px;
+    font-size: 9px;
 }
 """
 
@@ -42,6 +42,8 @@ def _val(text="--"):
     lbl = QLabel(text)
     lbl.setStyleSheet(VALUE_STYLE)
     lbl.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+    lbl.setMinimumWidth(90)
+    lbl.setMaximumWidth(90)
     return lbl
 
 
@@ -59,9 +61,12 @@ class _KVGroup(QGroupBox):
     def __init__(self, title, items, parent=None):
         super().__init__(title, parent)
         self.setStyleSheet(GROUP_STYLE)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Maximum)
         grid = QGridLayout(self)
-        grid.setSpacing(1)
-        grid.setContentsMargins(4, 12, 4, 2)
+        grid.setSpacing(0)
+        grid.setContentsMargins(3, 10, 3, 1)
+        grid.setColumnStretch(0, 1)
+        grid.setColumnStretch(1, 0)
         self._f = {}
         for row, (label, key) in enumerate(items):
             grid.addWidget(_lbl(label), row, 0)
@@ -396,7 +401,7 @@ class GForcePanel(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumHeight(48)
+        self.setFixedHeight(40)
         self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self._gx = 0.0
         self._gy = 0.0
@@ -506,8 +511,9 @@ class RepeatButton(QPushButton):
 
 BTN_STYLE = """
 QPushButton {
-    background-color: #1a1d25; border: 1px solid #333; border-radius: 3px;
-    padding: 4px 6px; color: #ddd; font-size: 10px; font-family: monospace;
+    background-color: #1a1d25; border: 1px solid #333; border-radius: 4px;
+    padding: 6px 4px; color: #ddd; font-size: 10px; font-family: monospace;
+    min-height: 22px;
 }
 QPushButton:hover { background-color: #252830; border-color: #4CA3DD; }
 QPushButton:pressed { background-color: #4CA3DD; color: black; }
@@ -532,16 +538,17 @@ class QuickButtonPanel(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setStyleSheet(BTN_STYLE)
+        self.setFixedWidth(120)
         layout = QVBoxLayout(self)
-        layout.setSpacing(2)
-        layout.setContentsMargins(2, 0, 2, 0)
+        layout.setSpacing(1)
+        layout.setContentsMargins(1, 0, 1, 0)
 
         # AHRS / Calibration
         ahrs_grp = QGroupBox("AHRS")
         ahrs_grp.setStyleSheet(GROUP_STYLE)
         ahrs_lay = QVBoxLayout(ahrs_grp)
-        ahrs_lay.setSpacing(2)
-        ahrs_lay.setContentsMargins(4, 14, 4, 4)
+        ahrs_lay.setSpacing(1)
+        ahrs_lay.setContentsMargins(2, 10, 2, 2)
 
         btn_level = QPushButton("Level [Z]")
         btn_level.setToolTip("Set current attitude as level reference")
@@ -564,8 +571,8 @@ class QuickButtonPanel(QWidget):
         hdg_grp = QGroupBox("HDG Bug")
         hdg_grp.setStyleSheet(GROUP_STYLE)
         hdg_lay = QVBoxLayout(hdg_grp)
-        hdg_lay.setSpacing(2)
-        hdg_lay.setContentsMargins(4, 14, 4, 4)
+        hdg_lay.setSpacing(1)
+        hdg_lay.setContentsMargins(2, 10, 2, 2)
 
         btn_sync = QPushButton("Sync [H]")
         btn_sync.setToolTip("Set heading bug to current heading")
@@ -590,8 +597,8 @@ class QuickButtonPanel(QWidget):
         app_grp = QGroupBox("Display")
         app_grp.setStyleSheet(GROUP_STYLE)
         app_lay = QVBoxLayout(app_grp)
-        app_lay.setSpacing(2)
-        app_lay.setContentsMargins(4, 14, 4, 4)
+        app_lay.setSpacing(1)
+        app_lay.setContentsMargins(2, 10, 2, 2)
 
         btn_units = QPushButton("Units [U]")
         btn_units.setToolTip("Toggle US / Metric")
@@ -618,75 +625,75 @@ class QuickButtonPanel(QWidget):
 
 
 class DataPanelWidget(QWidget):
-    """Horizontal bottom strip: quick buttons + 4 panel columns + satellite bar graph."""
+    """Horizontal bottom strip: buttons + flight data + sensors + system + GNSS."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setStyleSheet("background-color: #0A0C10;")
 
         outer = QVBoxLayout(self)
-        outer.setSpacing(2)
-        outer.setContentsMargins(2, 2, 2, 2)
+        outer.setSpacing(1)
+        outer.setContentsMargins(1, 1, 1, 1)
 
         # G-force bar at top of data strip
         self.gforce_panel = GForcePanel()
         outer.addWidget(self.gforce_panel)
 
         root = QHBoxLayout()
-        root.setSpacing(2)
+        root.setSpacing(1)
         outer.addLayout(root, 1)
 
-        # Quick-access buttons (leftmost column)
+        # Quick-access buttons (leftmost, fixed narrow)
         self.button_panel = QuickButtonPanel()
         root.addWidget(self.button_panel, 0)
 
-        # Column 1: device + status
-        col1 = QVBoxLayout()
-        col1.setSpacing(1)
-        self.device_panel = DeviceInfoPanel()
-        self.status_panel = StatusPanel()
-        col1.addWidget(self.device_panel)
-        col1.addWidget(self.status_panel)
-        col1.addStretch()
-
-        # Column 2: orientation + environment + position
-        col2 = QVBoxLayout()
-        col2.setSpacing(1)
+        # Flight state: orientation, velocity, position, baro
+        col_flight = QVBoxLayout()
+        col_flight.setSpacing(0)
         self.orientation_panel = OrientationPanel()
-        self.baro_panel = BaroPanel()
+        self.velocity_panel = VelocityPanel()
         self.position_panel = PositionPanel()
-        col2.addWidget(self.orientation_panel)
-        col2.addWidget(self.baro_panel)
-        col2.addWidget(self.position_panel)
-        col2.addStretch()
+        self.baro_panel = BaroPanel()
+        col_flight.addWidget(self.orientation_panel)
+        col_flight.addWidget(self.velocity_panel)
+        col_flight.addWidget(self.position_panel)
+        col_flight.addWidget(self.baro_panel)
+        col_flight.addStretch()
 
-        # Column 3: accel + gyro + mag
-        col3 = QVBoxLayout()
-        col3.setSpacing(1)
+        # Raw sensors: accel, gyro, mag
+        col_raw = QVBoxLayout()
+        col_raw.setSpacing(0)
         self.accel_panel = AccelPanel()
         self.gyro_panel = GyroPanel()
         self.mag_panel = MagPanel()
-        self.velocity_panel = VelocityPanel()
-        col3.addWidget(self.accel_panel)
-        col3.addWidget(self.gyro_panel)
-        col3.addWidget(self.mag_panel)
-        col3.addWidget(self.velocity_panel)
-        col3.addStretch()
+        col_raw.addWidget(self.accel_panel)
+        col_raw.addWidget(self.gyro_panel)
+        col_raw.addWidget(self.mag_panel)
+        col_raw.addStretch()
 
-        # Column 4: GNSS RAWGPS
-        col4 = QVBoxLayout()
-        col4.setSpacing(1)
+        # System: device info, status
+        col_sys = QVBoxLayout()
+        col_sys.setSpacing(0)
+        self.device_panel = DeviceInfoPanel()
+        self.status_panel = StatusPanel()
+        col_sys.addWidget(self.device_panel)
+        col_sys.addWidget(self.status_panel)
+        col_sys.addStretch()
+
+        # GNSS
+        col_gnss = QVBoxLayout()
+        col_gnss.setSpacing(0)
         self.gnss_panel = GNSSPanel()
-        col4.addWidget(self.gnss_panel)
-        col4.addStretch()
+        col_gnss.addWidget(self.gnss_panel)
+        col_gnss.addStretch()
 
-        # Column 5: satellite bar graph
+        # Satellite bar graph
         self.sat_graph = SatelliteBarGraph()
 
-        root.addLayout(col1, 1)
-        root.addLayout(col2, 1)
-        root.addLayout(col3, 1)
-        root.addLayout(col4, 1)
+        root.addLayout(col_flight, 1)
+        root.addLayout(col_raw, 1)
+        root.addLayout(col_sys, 1)
+        root.addLayout(col_gnss, 1)
         root.addWidget(self.sat_graph, 2)
 
     def set_device_info(self, info: DeviceInfo):
