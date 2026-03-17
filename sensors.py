@@ -449,16 +449,16 @@ def _read_full_config(ser, info: DeviceInfo):
     if sc and len(sc) >= 2:
         info.current_scenario = struct.unpack('!H', sc[:2])[0]
 
-    # Available scenarios (23 bytes each: U16 type + U8 version + 20 char label)
+    # Available scenarios (22 bytes each: U16 type + 20 char label)
     raw = _quick_ack(ser, MID.ReqAvailableScenarios)
     if raw:
         info.available_scenarios = []
         o = 0
-        while o + 23 <= len(raw):
-            st = struct.unpack_from('!HB', raw, o)
-            label = raw[o + 3:o + 23].decode('ascii', errors='ignore').strip('\x00 ')
-            info.available_scenarios.append(FilterProfile(st[0], st[1], label))
-            o += 23
+        while o + 22 <= len(raw):
+            profile_type = struct.unpack_from('!H', raw, o)[0]
+            label = raw[o + 2:o + 22].decode('ascii', errors='ignore').strip('\x00 ')
+            info.available_scenarios.append(FilterProfile(profile_type, 0, label))
+            o += 22
 
     # GPS Lever Arm (MTi-G specific)
     la = _quick_ack(ser, MID.SetLeverArmGPS)

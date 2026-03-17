@@ -231,7 +231,7 @@ class SettingsDialog(QDialog):
         if self.info.available_scenarios:
             for sc in self.info.available_scenarios:
                 self._scenario_combo.addItem(
-                    f"[{sc.profile_type}] v{sc.version} — {sc.label}", sc.profile_type
+                    f"[{sc.profile_type}] {sc.label}", sc.profile_type
                 )
                 if sc.profile_type == self.info.current_scenario:
                     self._scenario_combo.setCurrentIndex(self._scenario_combo.count() - 1)
