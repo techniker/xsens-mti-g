@@ -42,6 +42,7 @@ from settings_dialog import SettingsDialog
 import config
 from vario_audio import VarioAudio
 from map_widget import MapWidget
+from terrain import TerrainProvider
 
 
 BAR_STYLE = """
@@ -270,6 +271,7 @@ class MainWindow(QMainWindow):
         # Instrument area: PFD (left) + optional map (right) in a splitter
         self._instrument_splitter = QSplitter(Qt.Orientation.Horizontal)
         self._instrument_splitter.setHandleWidth(0)
+        self._instrument_splitter.setChildrenCollapsible(False)
         self._instrument_splitter.setStyleSheet("QSplitter { background: #0A0C10; }")
 
         # PFD in a frame for border support
@@ -327,7 +329,9 @@ class MainWindow(QMainWindow):
         self.bottom_bar.configure(2, "VARIO", self._toggle_vario)
         self.bottom_bar.configure(3, "AHRS", self._show_ahrs)
         self.bottom_bar.configure(4, "MAP", self._toggle_map)
-        # 5-10 reserved for future use (empty/disabled)
+        # 5-8 dynamic (map context)
+        self.bottom_bar.configure(9, "SYN VIS", self._toggle_synvis)
+        # 10 reserved
         self.bottom_bar.configure(11, "MENU", self._show_settings)
 
         # Status bar (hidden by default)
@@ -345,6 +349,11 @@ class MainWindow(QMainWindow):
 
         # Variometer audio
         self.vario = VarioAudio()
+
+        # Terrain provider for synthetic vision
+        self.terrain = TerrainProvider()
+        self.terrain.set_update_callback(self._on_terrain_update)
+        self.pfd._terrain = self.terrain
 
         # Keyboard shortcuts (window-level so they work regardless of focus)
         QShortcut(QKeySequence(Qt.Key.Key_Q), self, self.close)
@@ -398,8 +407,7 @@ class MainWindow(QMainWindow):
         visible = not self._map_frame.isVisible()
         self._map_frame.setVisible(visible)
         if visible:
-            w = self._instrument_splitter.width()
-            self._instrument_splitter.setSizes([w // 2, w // 2])
+            QTimer.singleShot(50, self._equalize_split)
             # Show map-context softkeys
             self.bottom_bar.configure(5, "NORTH UP", self._toggle_map_orientation)
             self._update_map_orientation_label()
@@ -429,6 +437,23 @@ class MainWindow(QMainWindow):
         self._pfd_frame.setStyleSheet(f"QFrame {{ {border} }}")
         self._map_frame.setStyleSheet(f"QFrame {{ {border} }}")
 
+    def _on_terrain_update(self):
+        # New terrain tile arrived — force recompute on next frame
+        self.pfd._synvis_grid_tgt = None
+        self.pfd._synvis_last_hdg = None
+        self.pfd.update()
+
+    def _toggle_synvis(self):
+        self.pfd._synvis_enabled = not self.pfd._synvis_enabled
+        self.pfd._synvis_frozen = False
+        self.pfd._synvis_grid_cur = None
+        self.pfd._synvis_grid_tgt = None
+        self.pfd._synvis_last_hdg = None
+        self.bottom_bar.set_indicator(9, self.pfd._synvis_enabled)
+        # Prefetch terrain tiles around current position
+        if self.pfd._synvis_enabled and self.pfd._gnss_has_pos:
+            self.terrain.prefetch_around(self.pfd._gnss_lat, self.pfd._gnss_lon, radius_tiles=3)
+
     def _toggle_vario(self):
         self.vario.enabled = not self.vario.enabled
         self.bottom_bar.set_indicator(2, self.vario.enabled)
@@ -443,6 +468,17 @@ class MainWindow(QMainWindow):
             self.showNormal()
         else:
             self.showFullScreen()
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if self._map_frame.isVisible():
+            QTimer.singleShot(50, self._equalize_split)
+
+    def _equalize_split(self):
+        if self._map_frame.isVisible():
+            w = self._instrument_splitter.width()
+            if w > 0:
+                self._instrument_splitter.setSizes([w // 2, w // 2])
 
     def _calibrate(self):
         """Send heading reset to the Xsens — device handles it internally."""
@@ -518,6 +554,8 @@ class MainWindow(QMainWindow):
             "vsi_source": self.pfd._vsi_source,
             "vario_enabled": self.vario.enabled,
             "vario_volume": self.vario.volume,
+            "synvis_enabled": self.pfd._synvis_enabled,
+            "synvis_range": self.pfd._synvis_range,
             "map_provider": self.map_view.provider_name,
             "map_overlay": self.map_view._overlay_enabled,
             "map_heading_up": self.map_view.heading_up,
@@ -569,6 +607,9 @@ def main():
     window.vario.enabled = cfg["vario_enabled"]
     window.vario.volume = cfg["vario_volume"]
     window.bottom_bar.set_indicator(2, cfg["vario_enabled"])
+    window.pfd._synvis_enabled = cfg["synvis_enabled"]
+    window.pfd._synvis_range = cfg["synvis_range"]
+    window.bottom_bar.set_indicator(9, cfg["synvis_enabled"])
     window.map_view.provider_name = cfg["map_provider"]
     window.map_view._overlay_enabled = cfg["map_overlay"]
     window.map_view.heading_up = cfg["map_heading_up"]

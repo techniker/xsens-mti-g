@@ -778,6 +778,44 @@ class SettingsDialog(QDialog):
         self._map_nam.finished.connect(self._on_map_test_reply)
         layout.addWidget(test_grp)
 
+        # Synthetic Vision
+        synvis_grp = QGroupBox("Synthetic Vision")
+        synvis_layout = QVBoxLayout(synvis_grp)
+        synvis_hint = QLabel(
+            "3D terrain overlay on the attitude indicator using AWS Terrain Tiles "
+            "(free, no API key). Terrain colored by elevation with red warning "
+            "for terrain at or above aircraft altitude."
+        )
+        synvis_hint.setWordWrap(True)
+        synvis_hint.setStyleSheet("color: #666; font-size: 10px;")
+        synvis_layout.addWidget(synvis_hint)
+
+        self._synvis_cb = QCheckBox("Enable synthetic vision (SYN VIS)")
+        self._synvis_cb.setChecked(self.pfd._synvis_enabled)
+        self._synvis_cb.toggled.connect(self._on_synvis_toggled)
+        synvis_layout.addWidget(self._synvis_cb)
+
+        range_row = QHBoxLayout()
+        range_row.addWidget(QLabel("Forward range:"))
+        self._synvis_range_spin = QSpinBox()
+        self._synvis_range_spin.setRange(5000, 50000)
+        self._synvis_range_spin.setSingleStep(1000)
+        self._synvis_range_spin.setSuffix(" m")
+        self._synvis_range_spin.setValue(self.pfd._synvis_range)
+        self._synvis_range_spin.valueChanged.connect(
+            lambda v: setattr(self.pfd, '_synvis_range', v))
+        range_row.addWidget(self._synvis_range_spin)
+        synvis_layout.addLayout(range_row)
+
+        test_btn = QPushButton("Test: Inject Mountains 5 km Ahead")
+        test_btn.clicked.connect(self._inject_test_terrain)
+        synvis_layout.addWidget(test_btn)
+        clear_test_btn = QPushButton("Clear Test Terrain")
+        clear_test_btn.clicked.connect(self._clear_test_terrain)
+        synvis_layout.addWidget(clear_test_btn)
+
+        layout.addWidget(synvis_grp)
+
         # Cache
         cache_grp = QGroupBox("Tile Cache")
         cache_layout = QVBoxLayout(cache_grp)
@@ -833,6 +871,90 @@ class SettingsDialog(QDialog):
             self.map_view.update()
         self._update_cache_info()
         self._set_status("Map cache cleared")
+
+    def _inject_test_terrain(self):
+        """Inject synthetic mountain range 5km ahead for SVS testing."""
+        import math
+        pfd = self.pfd
+        terrain = pfd._terrain
+        if terrain is None:
+            self._set_status("No terrain provider")
+            return
+
+        # Enable synvis if not already
+        pfd._synvis_enabled = True
+        if hasattr(self, '_synvis_cb'):
+            self._synvis_cb.setChecked(True)
+
+        # Build a test grid with mountains
+        gw = pfd._synvis_grid_w
+        gh = pfd._synvis_grid_h
+        rng = pfd._synvis_range
+        aircraft_alt = pfd._altitude
+
+        test_grid = []
+        for row in range(gh):
+            t = 1.0 - row / max(1, gh - 1)
+            dist = max(30, rng * (t ** 2.0))
+            row_data = []
+            for col in range(gw):
+                h_frac = (col / max(1, gw - 1)) - 0.5
+
+                # Base terrain at 100m MSL
+                elev = 100.0
+
+                # Mountain range at 3-7km, peaking at 5km
+                if 2000 < dist < 8000:
+                    peak_t = 1.0 - abs(dist - 5000) / 3000.0
+                    peak_t = max(0, peak_t)
+                    # Ridge shape: higher in center, lower at edges
+                    ridge = 1.0 - abs(h_frac) * 2.5
+                    ridge = max(0, ridge) ** 0.8
+                    # Multiple peaks
+                    wave = 0.5 + 0.5 * math.sin(h_frac * 15 + dist * 0.001)
+                    elev += peak_t * ridge * wave * 1500 + peak_t * ridge * 800
+
+                # Foothills at 1.5-3km
+                if 1000 < dist < 4000:
+                    foot_t = 1.0 - abs(dist - 2500) / 1500.0
+                    foot_t = max(0, foot_t)
+                    wave2 = 0.5 + 0.5 * math.sin(h_frac * 25 + dist * 0.002)
+                    elev += foot_t * wave2 * 200
+
+                row_data.append((elev, dist))
+            test_grid.append(row_data)
+
+        # Inject directly into the display grid
+        pfd._synvis_grid_cur = test_grid
+        pfd._synvis_grid_tgt = None
+        pfd._synvis_blend = 1.0
+        # Prevent auto-recompute from overwriting it
+        pfd._synvis_last_hdg = pfd._heading
+        pfd._synvis_last_lat = pfd._gnss_lat
+        pfd._synvis_last_lon = pfd._gnss_lon
+        pfd._synvis_last_alt = pfd._altitude
+        pfd._synvis_frozen = True
+        pfd.update()
+        self._set_status("Test terrain injected: mountains at 3-7 km")
+
+    def _clear_test_terrain(self):
+        """Clear injected test terrain and resume live data."""
+        self.pfd._synvis_frozen = False
+        self.pfd._synvis_grid_cur = None
+        self.pfd._synvis_grid_tgt = None
+        self.pfd._synvis_last_hdg = None
+        self.pfd.update()
+        self._set_status("Test terrain cleared — live data resumed")
+
+    def _on_synvis_toggled(self, checked):
+        self.pfd._synvis_enabled = checked
+        self.pfd._synvis_frozen = False
+        self.pfd._synvis_grid_cur = None
+        self.pfd._synvis_grid_tgt = None
+        self.pfd._synvis_last_hdg = None
+        if checked and self.pfd._terrain and self.pfd._gnss_has_pos:
+            self.pfd._terrain.prefetch_around(
+                self.pfd._gnss_lat, self.pfd._gnss_lon, radius_tiles=3)
 
     def _on_map_provider_changed(self, idx):
         name = self._map_combo.currentData()
