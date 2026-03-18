@@ -176,14 +176,24 @@ class TerrainProvider:
         reply.deleteLater()
 
     def _decode_image(self, img: QImage):
-        """Decode a Terrarium PNG into a 2D elevation grid."""
+        """Decode a Terrarium PNG into a 2D elevation grid.
+        Uses raw pixel data for performance (vs pixelColor per pixel)."""
+        img = img.convertToFormat(QImage.Format.Format_RGB32)
         w, h = img.width(), img.height()
+        ptr = img.bits()
+        ptr.setsize(h * img.bytesPerLine())
+        raw = bytes(ptr)
+        bpl = img.bytesPerLine()
         grid = []
         for y in range(h):
             row = []
+            offset = y * bpl
             for x in range(w):
-                c = img.pixelColor(x, y)
-                elev = decode_terrarium(c.red(), c.green(), c.blue())
-                row.append(elev)
+                i = offset + x * 4
+                # Format_RGB32: BGRA byte order
+                b = raw[i]
+                g = raw[i + 1]
+                r = raw[i + 2]
+                row.append((r * 256.0 + g + b / 256.0) - 32768.0)
             grid.append(row)
         return grid

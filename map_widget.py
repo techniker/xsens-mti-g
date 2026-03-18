@@ -101,6 +101,10 @@ class MapWidget(QWidget):
         # API keys (loaded from config later)
         self._api_keys = {}
 
+        # Cached font for NO DATA tiles
+        self._nodata_font = QFont("Monospace", 16)
+        self._nodata_font.setBold(True)
+
         # Ensure cache dir
         os.makedirs(CACHE_DIR, exist_ok=True)
 
@@ -177,6 +181,10 @@ class MapWidget(QWidget):
     def set_zoom(self, z):
         new_z = max(self._min_zoom, min(self._max_zoom, z))
         if new_z != self._zoom:
+            # Scale pan offset: each zoom level doubles the pixel scale
+            scale = 2 ** (new_z - self._zoom)
+            self._pan_x *= scale
+            self._pan_y *= scale
             self._zoom = new_z
             self._pending.clear()
             self.update()
@@ -206,13 +214,17 @@ class MapWidget(QWidget):
         # Aircraft position in tile coordinates
         ax, ay = _lat_lon_to_tile(self._lat, self._lon, zoom)
 
-        # Calculate which tiles we need (with margin for rotation + pan)
-        pan_margin = math.hypot(self._pan_x, self._pan_y)
-        diag = math.hypot(w, h) / 2.0 + TILE_SIZE + pan_margin
-        tiles_needed = int(math.ceil(diag / TILE_SIZE)) + 2
+        # Calculate tiles needed (viewport size + rotation margin, clamped)
+        diag = math.hypot(w, h) / 2.0 + TILE_SIZE
+        tiles_needed = min(8, int(math.ceil(diag / TILE_SIZE)) + 1)
 
-        tile_cx = int(ax)
-        tile_cy = int(ay)
+        # Shift tile center by pan offset (in tile units) to fetch correct tiles
+        pan_tx = self._pan_x / TILE_SIZE
+        pan_ty = self._pan_y / TILE_SIZE
+        view_cx = ax - pan_tx
+        view_cy = ay - pan_ty
+        tile_cx = int(view_cx)
+        tile_cy = int(view_cy)
         frac_x = (ax - tile_cx) * TILE_SIZE
         frac_y = (ay - tile_cy) * TILE_SIZE
 
@@ -239,6 +251,10 @@ class MapWidget(QWidget):
                 px = cx + (dx * TILE_SIZE) - frac_x + self._pan_x
                 py = cy + (dy * TILE_SIZE) - frac_y + self._pan_y
 
+                # Skip tiles completely outside viewport
+                if px + TILE_SIZE < -w or px > w * 2 or py + TILE_SIZE < -h or py > h * 2:
+                    continue
+
                 pixmap = self._get_tile(zoom, tx, ty)
                 if pixmap:
                     p.drawPixmap(int(px), int(py), pixmap)
@@ -248,9 +264,7 @@ class MapWidget(QWidget):
                     p.setPen(QPen(QColor(200, 50, 50), 1))
                     p.setBrush(Qt.BrushStyle.NoBrush)
                     p.drawRect(ipx, ipy, TILE_SIZE, TILE_SIZE)
-                    nf = QFont("Monospace", 16)
-                    nf.setBold(True)
-                    p.setFont(nf)
+                    p.setFont(self._nodata_font)
                     p.drawText(QRectF(ipx, ipy, TILE_SIZE, TILE_SIZE),
                                Qt.AlignmentFlag.AlignCenter, "NO DATA")
 
@@ -266,16 +280,13 @@ class MapWidget(QWidget):
                     tx = tx % n
                     px = cx + (dx * TILE_SIZE) - frac_x + self._pan_x
                     py = cy + (dy * TILE_SIZE) - frac_y + self._pan_y
+                    if px + TILE_SIZE < -w or px > w * 2 or py + TILE_SIZE < -h or py > h * 2:
+                        continue
                     overlay = self._get_tile(zoom, tx, ty, provider_override="OpenAIP")
                     if overlay:
                         p.drawPixmap(int(px), int(py), overlay)
 
         p.restore()  # undo map rotation
-
-        # Prefetch surrounding tiles for smooth movement
-        self._prefetch_tiles(ax, ay, zoom, self._provider_name)
-        if self._overlay_enabled and self._api_keys.get("OpenAIP"):
-            self._prefetch_tiles(ax, ay, zoom, "OpenAIP")
 
         # Aircraft at screen center + pan (stays at its geographic position)
         ac_x = cx + self._pan_x
@@ -331,20 +342,6 @@ class MapWidget(QWidget):
         p.setPen(QPen(QColor(255, 80, 80)))
         p.drawText(QRectF(box_x, box_y, box_w, box_h),
                    Qt.AlignmentFlag.AlignCenter, "MAP\nWaiting for GPS fix")
-
-    def _prefetch_tiles(self, ax, ay, zoom, provider_name):
-        """Prefetch tiles in a ring around current view for smooth panning."""
-        tiles_needed = int(math.ceil(math.hypot(self.width(), self.height()) / 2.0 / TILE_SIZE)) + 4
-        tile_cx = int(ax)
-        tile_cy = int(ay)
-        n = 2 ** zoom
-        for dx in range(-tiles_needed, tiles_needed + 1):
-            for dy in range(-tiles_needed, tiles_needed + 1):
-                tx = (tile_cx + dx) % n
-                ty = tile_cy + dy
-                if ty < 0 or ty >= n:
-                    continue
-                self._get_tile(zoom, tx, ty, provider_override=provider_name)
 
     def _draw_aircraft(self, p: QPainter, cx, cy, heading):
         p.save()

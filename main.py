@@ -556,6 +556,8 @@ class MainWindow(QMainWindow):
             "vario_volume": self.vario.volume,
             "synvis_enabled": self.pfd._synvis_enabled,
             "synvis_range": self.pfd._synvis_range,
+            "map_visible": self._map_frame.isVisible(),
+            "map_zoom": self.map_view._zoom,
             "map_provider": self.map_view.provider_name,
             "map_overlay": self.map_view._overlay_enabled,
             "map_heading_up": self.map_view.heading_up,
@@ -610,6 +612,7 @@ def main():
     window.pfd._synvis_enabled = cfg["synvis_enabled"]
     window.pfd._synvis_range = cfg["synvis_range"]
     window.bottom_bar.set_indicator(9, cfg["synvis_enabled"])
+    window.map_view.set_zoom(cfg["map_zoom"])
     window.map_view.provider_name = cfg["map_provider"]
     window.map_view._overlay_enabled = cfg["map_overlay"]
     window.map_view.heading_up = cfg["map_heading_up"]
@@ -622,6 +625,10 @@ def main():
         window.show()
     else:
         window.showFullScreen()
+
+    # Restore map visibility after window is shown (splitter needs geometry)
+    if cfg["map_visible"]:
+        QTimer.singleShot(200, window._toggle_map)
 
     sensor.start()
 

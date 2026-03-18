@@ -23,6 +23,8 @@ _DEFAULTS = {
     "vario_volume": 0.7,
     "synvis_enabled": False,
     "synvis_range": 15000,
+    "map_visible": False,
+    "map_zoom": 14,
     "map_provider": "OpenStreetMap",
     "map_overlay": False,
     "map_heading_up": False,

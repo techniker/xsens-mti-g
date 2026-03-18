@@ -134,8 +134,8 @@ class PFDWidget(QWidget):
         self._synvis_enabled = False
         self._terrain = None  # TerrainProvider, set externally
         self._synvis_range = 15000  # meters forward view
-        self._synvis_grid_w = 60    # horizontal samples
-        self._synvis_grid_h = 50    # depth samples (more = smoother near terrain)
+        self._synvis_grid_w = 40    # horizontal samples
+        self._synvis_grid_h = 30    # depth samples
         self._synvis_fov_h = 120.0  # horizontal FOV degrees (wide to fill view)
         self._synvis_grid_cur = None   # current display grid (interpolated)
         self._synvis_grid_tgt = None   # target grid (latest computed)
