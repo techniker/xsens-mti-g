@@ -1182,8 +1182,6 @@ class PFDWidget(QWidget):
 
     def _draw_altitude_tape(self, p: QPainter, r: QRect):
         p.save()
-        p.setClipRect(r)
-        p.fillRect(r, TAPE_BG)
 
         if self._metric:
             alt_disp = self._altitude            # meters
@@ -1198,10 +1196,17 @@ class PFDWidget(QWidget):
             src = "GNSS" if self._alt_source == "gnss" else "ALT"
             label = f"{src} ft"
 
-        cy = r.center().y()
-        tape_w = r.width()
-        px_per_unit = r.height() / span
-        x0 = r.left()
+        # Reserve same bottom strip as speed tape so pointers align
+        label_strip_h = max(20, int(r.height() * 0.045))
+        tape_r = QRect(r.left(), r.top(), r.width(), r.height() - label_strip_h)
+
+        p.setClipRect(tape_r)
+        p.fillRect(tape_r, TAPE_BG)
+
+        cy = tape_r.center().y()
+        tape_w = tape_r.width()
+        px_per_unit = tape_r.height() / span
+        x0 = tape_r.left()
 
         tick_font_sz = max(8, int(tape_w * 0.10))
         font = QFont("Monospace", tick_font_sz)
@@ -1216,7 +1221,7 @@ class PFDWidget(QWidget):
             for sub in range(0, major, minor):
                 v = base + i * major + sub
                 y = cy - (v - alt_disp) * px_per_unit
-                if y < r.top() - 10 or y > r.bottom() + 10:
+                if y < tape_r.top() - 10 or y > tape_r.bottom() + 10:
                     continue
                 if v % major == 0:
                     p.setPen(QPen(FG, 1.5))
@@ -1265,10 +1270,31 @@ class PFDWidget(QWidget):
         box_r = QRectF(x0 + arrow_w, cy - box_h / 2, tape_w - arrow_w - 2, box_h)
         self._draw_drum_pointer(p, drum_alt, 5, cy, ptr_font_sz, box_r, x_text)
 
-        small_font = QFont("Monospace", max(7, int(tape_w * 0.10)))
-        p.setFont(small_font)
-        p.setPen(QPen(FG_DIM, 1))
-        p.drawText(QPointF(x0 + 4, r.bottom() - 4), label)
+        # Label strip at bottom (matches speed tape GS strip)
+        p.setClipping(False)
+        label_r = QRect(r.left(), tape_r.bottom(), r.width(), label_strip_h)
+        p.setPen(QPen(QColor(160, 160, 160), 1))
+        p.setBrush(QColor(20, 22, 28, 160))
+        p.drawRect(label_r)
+
+        # Auto-scale font to fit label within strip
+        avail_lw = label_r.width() - 6
+        lbl_font_sz = max(5, int(label_strip_h * 0.55))
+        while lbl_font_sz > 5:
+            test_f = QFont("Monospace", lbl_font_sz)
+            test_f.setBold(True)
+            if QFontMetrics(test_f).horizontalAdvance(label) <= avail_lw:
+                break
+            lbl_font_sz -= 1
+        lbl_font = QFont("Monospace", lbl_font_sz)
+        lbl_font.setBold(True)
+        p.setFont(lbl_font)
+        lfm = QFontMetrics(lbl_font)
+        p.setPen(QPen(FG_DIM))
+        # Right-align the label
+        lbl_w = lfm.horizontalAdvance(label)
+        p.drawText(label_r.right() - lbl_w - 3,
+                   label_r.top() + lfm.ascent() + (label_strip_h - lfm.height()) // 2, label)
         p.restore()
 
     # ─────────── Vertical Speed Indicator ───────────
@@ -1353,7 +1379,7 @@ class PFDWidget(QWidget):
                        Qt.AlignmentFlag.AlignCenter, vtxt)
         else:
             # Small triangle pointer
-            tri_h = max(4, int(vw * 0.25))
+            tri_h = max(8, int(vw * 0.50))
             tri = QPolygonF([
                 QPointF(x0, ptr_y),
                 QPointF(x0 + tri_h, ptr_y - tri_h / 2),
