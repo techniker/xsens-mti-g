@@ -9,13 +9,15 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QGroupBox, QPushButton, QComboBox, QSpinBox,
     QDoubleSpinBox, QCheckBox, QTabWidget, QWidget, QSlider,
-    QLineEdit, QMessageBox,
+    QLineEdit, QMessageBox, QScrollArea,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QUrl
 from PyQt6.QtGui import QFont
+from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 
 from sensors import MID, Baudrates
 import pfd_widget
+from map_widget import PROVIDERS as MAP_PROVIDERS
 
 DIALOG_STYLE = """
 QDialog { background-color: #0e1017; color: #ddd; }
@@ -67,12 +69,14 @@ def _section_label(text):
 
 class SettingsDialog(QDialog):
 
-    def __init__(self, sensor, pfd, parent=None):
+    def __init__(self, sensor, pfd, vario=None, map_view=None, parent=None):
         super().__init__(parent)
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
         self.sensor = sensor
         self.pfd = pfd
+        self.vario = vario
+        self.map_view = map_view
         self.info = sensor.device_info
-        self.setWindowTitle("MTi-G Settings")
         self.setMinimumSize(620, 520)
         self.setStyleSheet(DIALOG_STYLE)
 
@@ -85,6 +89,8 @@ class SettingsDialog(QDialog):
         tabs.addTab(self._build_filter_tab(), "Filter")
         tabs.addTab(self._build_gps_tab(), "GPS / Mag")
         tabs.addTab(self._build_display_tab(), "Display")
+        if self.map_view is not None:
+            tabs.addTab(self._build_map_tab(), "Map")
         tabs.addTab(self._build_commands_tab(), "Commands")
         layout.addWidget(tabs)
 
@@ -473,6 +479,32 @@ class SettingsDialog(QDialog):
         mag_layout.addWidget(apply_decl)
         layout.addWidget(mag_grp)
 
+        # Compass Course Correction
+        ccc_grp = QGroupBox("Compass Course Correction")
+        ccc_layout = QVBoxLayout(ccc_grp)
+        ccc_hint = QLabel(
+            "Manual heading offset to correct for residual compass error after "
+            "calibration. Applied on top of magnetic declination."
+        )
+        ccc_hint.setWordWrap(True)
+        ccc_hint.setStyleSheet("color: #666; font-size: 10px;")
+        ccc_layout.addWidget(ccc_hint)
+        ccc_row = QHBoxLayout()
+        ccc_row.addWidget(QLabel("Offset [deg]:"))
+        self._compass_offset_spin = QDoubleSpinBox()
+        self._compass_offset_spin.setRange(-180.0, 180.0)
+        self._compass_offset_spin.setDecimals(1)
+        self._compass_offset_spin.setSingleStep(0.5)
+        self._compass_offset_spin.setValue(self.pfd._compass_offset)
+        self._compass_offset_spin.valueChanged.connect(
+            lambda v: setattr(self.pfd, '_compass_offset', v))
+        ccc_row.addWidget(self._compass_offset_spin)
+        zero_btn = QPushButton("Zero")
+        zero_btn.clicked.connect(lambda: self._compass_offset_spin.setValue(0.0))
+        ccc_row.addWidget(zero_btn)
+        ccc_layout.addLayout(ccc_row)
+        layout.addWidget(ccc_grp)
+
         # In-run Compass Calibration
         icc_grp = QGroupBox("In-run Compass Calibration (ICC)")
         icc_layout = QVBoxLayout(icc_grp)
@@ -525,6 +557,9 @@ class SettingsDialog(QDialog):
 
     # ─── Display tab ───
     def _build_display_tab(self):
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("QScrollArea { border: none; }")
         w = QWidget()
         layout = QVBoxLayout(w)
 
@@ -603,6 +638,38 @@ class SettingsDialog(QDialog):
         vsi_layout.addWidget(self._vsi_combo)
         layout.addWidget(vsi_grp)
 
+        # Variometer Audio
+        if self.vario is not None:
+            vario_grp = QGroupBox("Variometer Audio")
+            vario_layout = QVBoxLayout(vario_grp)
+            vario_hint = QLabel(
+                "Glider-style vario sound: beeping tone in climb (faster = stronger lift), "
+                "continuous low tone in sink, silent in dead band."
+            )
+            vario_hint.setWordWrap(True)
+            vario_hint.setStyleSheet("color: #666; font-size: 10px;")
+            vario_layout.addWidget(vario_hint)
+            row1 = QHBoxLayout()
+            self._vario_cb = QCheckBox("Enable vario audio")
+            self._vario_cb.setChecked(self.vario.enabled)
+            self._vario_cb.toggled.connect(self._on_vario_toggled)
+            row1.addWidget(self._vario_cb)
+            vario_layout.addLayout(row1)
+            row2 = QHBoxLayout()
+            row2.addWidget(QLabel("Volume:"))
+            self._vario_vol = QSlider(Qt.Orientation.Horizontal)
+            self._vario_vol.setRange(0, 100)
+            self._vario_vol.setValue(int(self.vario.volume * 100))
+            self._vario_vol.valueChanged.connect(
+                lambda v: setattr(self.vario, 'volume', v / 100.0))
+            row2.addWidget(self._vario_vol)
+            self._vario_vol_label = _ro_label(f"{int(self.vario.volume * 100)}%")
+            self._vario_vol.valueChanged.connect(
+                lambda v: self._vario_vol_label.setText(f"{v}%"))
+            row2.addWidget(self._vario_vol_label)
+            vario_layout.addLayout(row2)
+            layout.addWidget(vario_grp)
+
         # Startup
         startup_grp = QGroupBox("Startup")
         startup_layout = QHBoxLayout(startup_grp)
@@ -665,7 +732,8 @@ class SettingsDialog(QDialog):
             keys_grid.addWidget(QLabel(desc), row, 1)
         layout.addWidget(keys_grp)
         layout.addStretch()
-        return w
+        scroll.setWidget(w)
+        return scroll
 
     def _set_qnh_from_sensor(self):
         """Set QNH to the current barometric pressure reading from the IMU."""
@@ -674,6 +742,305 @@ class SettingsDialog(QDialog):
             self._p0_spin.setValue(data.pressure_pa / 100.0)
         else:
             self._set_status("No pressure reading available")
+
+    # ─── Map tab ───
+    def _build_map_tab(self):
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("QScrollArea { border: none; }")
+        w = QWidget()
+        layout = QVBoxLayout(w)
+
+        # Base layer
+        layer_grp = QGroupBox("Map Layers")
+        layer_layout = QVBoxLayout(layer_grp)
+
+        base_row = QHBoxLayout()
+        base_row.addWidget(QLabel("Base layer:"))
+        self._map_combo = QComboBox()
+        for name in MAP_PROVIDERS:
+            self._map_combo.addItem(name, name)
+            if name == self.map_view.provider_name:
+                self._map_combo.setCurrentIndex(self._map_combo.count() - 1)
+        self._map_combo.currentIndexChanged.connect(self._on_map_provider_changed)
+        base_row.addWidget(self._map_combo)
+        layer_layout.addLayout(base_row)
+
+        # Overlay
+        self._openaip_overlay_cb = QCheckBox("OpenAIP overlay (airspaces, airports, navaids)")
+        self._openaip_overlay_cb.setChecked(self.map_view._overlay_enabled)
+        self._openaip_overlay_cb.toggled.connect(
+            lambda v: setattr(self.map_view, '_overlay_enabled', v))
+        layer_layout.addWidget(self._openaip_overlay_cb)
+        layout.addWidget(layer_grp)
+
+        # OpenAIP API Key
+        key_grp = QGroupBox("OpenAIP API Key")
+        key_layout = QVBoxLayout(key_grp)
+        self._openaip_key = QLineEdit()
+        self._openaip_key.setPlaceholderText("Enter API key from openaip.net")
+        self._openaip_key.setText(self.map_view._api_keys.get("OpenAIP", ""))
+        self._openaip_key.textChanged.connect(
+            lambda t: self.map_view.set_api_key("OpenAIP", t))
+        key_layout.addWidget(self._openaip_key)
+        key_hint = QLabel("Get a free API key at openaip.net to enable aviation data.")
+        key_hint.setWordWrap(True)
+        key_hint.setStyleSheet("color: #666; font-size: 10px;")
+        key_layout.addWidget(key_hint)
+        layout.addWidget(key_grp)
+
+        # Connection test
+        test_grp = QGroupBox("Connection Status")
+        test_layout = QVBoxLayout(test_grp)
+        test_row = QHBoxLayout()
+        test_btn = QPushButton("Test Connection")
+        test_btn.clicked.connect(self._test_map_connection)
+        test_row.addWidget(test_btn)
+        self._map_status = QLabel("")
+        self._map_status.setWordWrap(True)
+        test_row.addWidget(self._map_status, 1)
+        test_layout.addLayout(test_row)
+        self._map_nam = QNetworkAccessManager(self)
+        self._map_nam.finished.connect(self._on_map_test_reply)
+        layout.addWidget(test_grp)
+
+        # Synthetic Vision
+        synvis_grp = QGroupBox("Synthetic Vision")
+        synvis_layout = QVBoxLayout(synvis_grp)
+        synvis_hint = QLabel(
+            "3D terrain overlay on the attitude indicator using AWS Terrain Tiles "
+            "(free, no API key). Terrain colored by elevation with red warning "
+            "for terrain at or above aircraft altitude."
+        )
+        synvis_hint.setWordWrap(True)
+        synvis_hint.setStyleSheet("color: #666; font-size: 10px;")
+        synvis_layout.addWidget(synvis_hint)
+
+        self._synvis_cb = QCheckBox("Enable synthetic vision (SYN VIS)")
+        self._synvis_cb.setChecked(self.pfd._synvis_enabled)
+        self._synvis_cb.toggled.connect(self._on_synvis_toggled)
+        synvis_layout.addWidget(self._synvis_cb)
+
+        range_row = QHBoxLayout()
+        range_row.addWidget(QLabel("Forward range:"))
+        self._synvis_range_spin = QSpinBox()
+        self._synvis_range_spin.setRange(5000, 50000)
+        self._synvis_range_spin.setSingleStep(1000)
+        self._synvis_range_spin.setSuffix(" m")
+        self._synvis_range_spin.setValue(self.pfd._synvis_range)
+        self._synvis_range_spin.valueChanged.connect(
+            lambda v: setattr(self.pfd, '_synvis_range', v))
+        range_row.addWidget(self._synvis_range_spin)
+        synvis_layout.addLayout(range_row)
+
+        test_btn = QPushButton("Test: Inject Mountains 5 km Ahead")
+        test_btn.clicked.connect(self._inject_test_terrain)
+        synvis_layout.addWidget(test_btn)
+        clear_test_btn = QPushButton("Clear Test Terrain")
+        clear_test_btn.clicked.connect(self._clear_test_terrain)
+        synvis_layout.addWidget(clear_test_btn)
+
+        layout.addWidget(synvis_grp)
+
+        # Cache
+        cache_grp = QGroupBox("Tile Cache")
+        cache_layout = QVBoxLayout(cache_grp)
+        self._cache_info = QLabel("")
+        self._cache_info.setStyleSheet("color: #aaa; font-size: 11px;")
+        self._update_cache_info()
+        cache_layout.addWidget(self._cache_info)
+        clear_btn = QPushButton("Clear Map Cache")
+        clear_btn.setObjectName("danger")
+        clear_btn.clicked.connect(self._clear_map_cache)
+        cache_layout.addWidget(clear_btn)
+        layout.addWidget(cache_grp)
+
+        layout.addStretch()
+        scroll.setWidget(w)
+        return scroll
+
+    def _update_cache_info(self):
+        if not hasattr(self, '_cache_info'):
+            return
+        from map_widget import CACHE_DIR
+        import os, shutil
+        count = 0
+        size = 0
+        if os.path.isdir(CACHE_DIR):
+            for f in os.listdir(CACHE_DIR):
+                fp = os.path.join(CACHE_DIR, f)
+                if os.path.isfile(fp):
+                    count += 1
+                    size += os.path.getsize(fp)
+        if size > 1024 * 1024:
+            size_str = f"{size / 1024 / 1024:.1f} MB"
+        else:
+            size_str = f"{size / 1024:.0f} KB"
+        try:
+            disk = shutil.disk_usage(CACHE_DIR)
+            free_gb = disk.free / (1024 ** 3)
+            total_gb = disk.total / (1024 ** 3)
+            disk_str = f"  |  Disk: {free_gb:.1f} GB free / {total_gb:.1f} GB total"
+        except OSError:
+            disk_str = ""
+        self._cache_info.setText(f"{count} tiles, {size_str}{disk_str}")
+
+    def _clear_map_cache(self):
+        from map_widget import CACHE_DIR
+        import os, shutil
+        if os.path.isdir(CACHE_DIR):
+            shutil.rmtree(CACHE_DIR)
+            os.makedirs(CACHE_DIR, exist_ok=True)
+        if self.map_view:
+            self.map_view._tile_cache.clear()
+            self.map_view._pending.clear()
+            self.map_view.update()
+        self._update_cache_info()
+        self._set_status("Map cache cleared")
+
+    def _inject_test_terrain(self):
+        """Inject synthetic mountain range 5km ahead for SVS testing."""
+        import math
+        pfd = self.pfd
+        terrain = pfd._terrain
+        if terrain is None:
+            self._set_status("No terrain provider")
+            return
+
+        # Enable synvis if not already
+        pfd._synvis_enabled = True
+        if hasattr(self, '_synvis_cb'):
+            self._synvis_cb.setChecked(True)
+
+        # Build a test grid with mountains
+        gw = pfd._synvis_grid_w
+        gh = pfd._synvis_grid_h
+        rng = pfd._synvis_range
+        aircraft_alt = pfd._altitude
+
+        test_grid = []
+        for row in range(gh):
+            t = 1.0 - row / max(1, gh - 1)
+            dist = max(30, rng * (t ** 2.0))
+            row_data = []
+            for col in range(gw):
+                h_frac = (col / max(1, gw - 1)) - 0.5
+
+                # Base terrain at 100m MSL
+                elev = 100.0
+
+                # Mountain range at 3-7km, peaking at 5km
+                if 2000 < dist < 8000:
+                    peak_t = 1.0 - abs(dist - 5000) / 3000.0
+                    peak_t = max(0, peak_t)
+                    # Ridge shape: higher in center, lower at edges
+                    ridge = 1.0 - abs(h_frac) * 2.5
+                    ridge = max(0, ridge) ** 0.8
+                    # Multiple peaks
+                    wave = 0.5 + 0.5 * math.sin(h_frac * 15 + dist * 0.001)
+                    elev += peak_t * ridge * wave * 1500 + peak_t * ridge * 800
+
+                # Foothills at 1.5-3km
+                if 1000 < dist < 4000:
+                    foot_t = 1.0 - abs(dist - 2500) / 1500.0
+                    foot_t = max(0, foot_t)
+                    wave2 = 0.5 + 0.5 * math.sin(h_frac * 25 + dist * 0.002)
+                    elev += foot_t * wave2 * 200
+
+                row_data.append((elev, dist))
+            test_grid.append(row_data)
+
+        # Inject directly into the display grid
+        pfd._synvis_grid_cur = test_grid
+        pfd._synvis_grid_tgt = None
+        pfd._synvis_blend = 1.0
+        # Prevent auto-recompute from overwriting it
+        pfd._synvis_last_hdg = pfd._heading
+        pfd._synvis_last_lat = pfd._gnss_lat
+        pfd._synvis_last_lon = pfd._gnss_lon
+        pfd._synvis_last_alt = pfd._altitude
+        pfd._synvis_frozen = True
+        pfd.update()
+        self._set_status("Test terrain injected: mountains at 3-7 km")
+
+    def _clear_test_terrain(self):
+        """Clear injected test terrain and resume live data."""
+        self.pfd._synvis_frozen = False
+        self.pfd._synvis_grid_cur = None
+        self.pfd._synvis_grid_tgt = None
+        self.pfd._synvis_last_hdg = None
+        self.pfd.update()
+        self._set_status("Test terrain cleared — live data resumed")
+
+    def _on_synvis_toggled(self, checked):
+        self.pfd._synvis_enabled = checked
+        self.pfd._synvis_frozen = False
+        self.pfd._synvis_grid_cur = None
+        self.pfd._synvis_grid_tgt = None
+        self.pfd._synvis_last_hdg = None
+        if checked and self.pfd._terrain and self.pfd._gnss_has_pos:
+            self.pfd._terrain.prefetch_around(
+                self.pfd._gnss_lat, self.pfd._gnss_lon, radius_tiles=3)
+
+    def _on_map_provider_changed(self, idx):
+        name = self._map_combo.currentData()
+        if self.map_view and name:
+            self.map_view.provider_name = name
+            self._test_map_connection()
+
+    def _test_map_connection(self):
+        if not hasattr(self, '_map_status'):
+            return
+        name = self._map_combo.currentData()
+        if not name:
+            return
+        provider = MAP_PROVIDERS.get(name)
+        if not provider:
+            return
+
+        self._map_status.setText("Testing...")
+        self._map_status.setStyleSheet("color: #FFCC00; font-size: 11px;")
+
+        # Build a test tile URL (zoom 1, tile 0,0 — small, always exists)
+        url_template = provider["url"]
+        subdomains = provider.get("subdomains", ["a"])
+        url = url_template.replace("{s}", subdomains[0]).replace("{z}", "1").replace("{x}", "0").replace("{y}", "0")
+
+        if provider.get("api_key"):
+            api_key = self.map_view._api_keys.get(name, "") if self.map_view else ""
+            url = url.replace("{key}", api_key)
+            if not api_key:
+                self._map_status.setText("No API key configured")
+                self._map_status.setStyleSheet("color: #FF8800; font-size: 11px;")
+                return
+
+        request = QNetworkRequest(QUrl(url))
+        request.setRawHeader(b"User-Agent", b"XsensMTiG-PFD/1.0")
+        request.setAttribute(QNetworkRequest.Attribute.User, name)
+        self._map_nam.get(request)
+
+    def _on_map_test_reply(self, reply: QNetworkReply):
+        if not hasattr(self, '_map_status'):
+            reply.deleteLater()
+            return
+        provider = reply.request().attribute(QNetworkRequest.Attribute.User)
+        status = reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute)
+        err = reply.error()
+
+        if err == QNetworkReply.NetworkError.NoError and status == 200:
+            self._map_status.setText(f"{provider}: OK (HTTP {status})")
+            self._map_status.setStyleSheet("color: #00CC00; font-size: 11px;")
+        elif status:
+            self._map_status.setText(f"{provider}: HTTP {status}")
+            self._map_status.setStyleSheet("color: #FF3333; font-size: 11px;")
+        else:
+            self._map_status.setText(f"{provider}: {reply.errorString()}")
+            self._map_status.setStyleSheet("color: #FF3333; font-size: 11px;")
+        reply.deleteLater()
+
+    def _on_vario_toggled(self, checked):
+        if self.vario:
+            self.vario.enabled = checked
 
     def _on_units_changed(self, idx):
         """Unit combo changed — update PFD and refresh speed band spinboxes."""

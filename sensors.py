@@ -539,6 +539,7 @@ class XSensSensor(threading.Thread):
         self._lock = threading.Lock()
         self._connected = False
         self._error: Optional[str] = None
+        self._last_ack: Optional[str] = None
         self._ser = None
         self._mode = 0
         self._settings = 0
@@ -573,8 +574,18 @@ class XSensSensor(threading.Thread):
         if not ser or not self._connected:
             return "Not connected"
         self._error = None
+        self._last_ack = None
         _write_req(ser, MID.ResetOrientation, struct.pack('!H', 0x0003))
-        return "Orientation reset sent"
+        # Wait briefly for ACK
+        import time as _time
+        deadline = _time.monotonic() + 0.5
+        while _time.monotonic() < deadline:
+            if self._last_ack:
+                return f"Orientation reset sent — {self._last_ack}"
+            if self._error:
+                return f"Orientation reset — error: {self._error}"
+            _time.sleep(0.02)
+        return "Orientation reset sent (no ACK received)"
 
     def send_icc_command(self, cmd: int) -> str:
         """In-run Compass Calibration: 0=start, 1=stop, 2=store+stop."""
@@ -703,6 +714,8 @@ class XSensSensor(threading.Thread):
                 elif mid == MID.UTCTime:
                     if len(payload) >= 4:
                         last_utc_ms = struct.unpack_from('!I', payload, 0)[0]
+                elif mid == MID.ResetOrientationAck:
+                    self._last_ack = "ResetOrientation ACK"
                 elif mid == MID.Error:
                     code = payload[0] if payload else 0
                     if code != 0x21:

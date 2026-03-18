@@ -16,9 +16,20 @@ _DEFAULTS = {
     "spd_vne": 163,
     "auto_zero_on_start": True,
     "hdg_bug": 0,
+    "compass_offset": 0.0,
     "att_source": "accel",
     "alt_source": "baro",  # "baro" or "gnss"
     "vsi_source": "gnss",  # "gnss" or "baro"
+    "vario_enabled": False,
+    "vario_volume": 0.7,
+    "synvis_enabled": False,
+    "synvis_range": 15000,
+    "map_visible": False,
+    "map_zoom": 14,
+    "map_provider": "OpenStreetMap",
+    "map_overlay": False,
+    "map_heading_up": False,
+    "openaip_api_key": "",
 }
 
 

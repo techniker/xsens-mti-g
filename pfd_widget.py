@@ -130,6 +130,31 @@ class PFDWidget(QWidget):
         self._baro_vsi = 0.0
         self._baro_vsi_alpha = 0.985  # heavy post-filter on VSI (~2s time constant at 30 Hz)
 
+        # Synthetic vision
+        self._synvis_enabled = False
+        self._terrain = None  # TerrainProvider, set externally
+        self._synvis_range = 15000  # meters forward view
+        self._synvis_grid_w = 40    # horizontal samples
+        self._synvis_grid_h = 30    # depth samples
+        self._synvis_fov_h = 120.0  # horizontal FOV degrees (wide to fill view)
+        self._synvis_grid_cur = None   # current display grid (interpolated)
+        self._synvis_grid_tgt = None   # target grid (latest computed)
+        self._synvis_blend = 1.0       # 0=old, 1=fully blended to target
+        self._synvis_blend_rate = 0.15 # per-frame blend step
+        self._synvis_last_hdg = None
+        self._synvis_last_lat = None
+        self._synvis_last_lon = None
+        self._synvis_last_alt = None
+        self._synvis_frozen = False    # when True, skip live grid updates (test mode)
+
+        # GNSS fix status (derived from available data)
+        self._gnss_nsv_used = 0   # SVs used in solution (bGPS field = numSV)
+        self._gnss_nsv_visible = 0  # SVs with signal (from GPS status channels)
+        self._compass_offset = 0.0  # manual compass correction degrees
+        self._gnss_has_pos = False  # valid position received
+        self._gnss_lat = 0.0
+        self._gnss_lon = 0.0
+
     def set_data(self, data: SensorData):
         """Update attitude, heading, speed, altitude from sensor data."""
         if self._att_source == "accel" and data.acc:
@@ -159,8 +184,8 @@ class PFDWidget(QWidget):
         # Heading: EKF only (accelerometer can't provide heading)
         if data.yaw_deg is not None:
             self._valid_hdg = True
-            self._heading = data.yaw_deg % 360.0
-            self._yaw_raw = data.yaw_deg
+            self._heading = (-data.yaw_deg + self._compass_offset) % 360.0
+            self._yaw_raw = -data.yaw_deg + self._compass_offset
 
         if data.vel:
             self._valid_spd = True
@@ -246,6 +271,19 @@ class PFDWidget(QWidget):
             self._fpv_visible = False
             self._fpv_x = 0.0
             self._fpv_y = 0.0
+
+        # GNSS status: bGPS = numSV (satellites used in solution)
+        if data.rawgps and data.rawgps.bGPS is not None:
+            self._gnss_nsv_used = data.rawgps.bGPS
+        if data.rawgps and data.rawgps.lat_deg is not None:
+            # Position is valid if coordinates are non-zero
+            self._gnss_has_pos = (data.rawgps.lat_deg != 0.0 or data.rawgps.lon_deg != 0.0)
+            self._gnss_lat = data.rawgps.lat_deg
+            self._gnss_lon = data.rawgps.lon_deg
+            if self._synvis_enabled and self._terrain and self._gnss_has_pos:
+                self._terrain.prefetch_around(self._gnss_lat, self._gnss_lon)
+        if data.gps_status:
+            self._gnss_nsv_visible = sum(1 for ch in data.gps_status.channels if ch.cnr > 0)
 
         self.update()
 
@@ -338,7 +376,53 @@ class PFDWidget(QWidget):
         if not self._valid_hdg:
             self._draw_fail_flag(p, layout['hsi'], "HDG")
 
+        self._draw_gnss_status(p, layout['hsi'])
+
         p.end()
+
+    # ─────────── GNSS fix status ───────────
+
+    def _draw_gnss_status(self, p: QPainter, hsi_rect: QRect):
+        """Draw GNSS fix status in the lower-left corner of the HSI area."""
+        nsv = self._gnss_nsv_used
+        has_pos = self._gnss_has_pos
+        nvis = self._gnss_nsv_visible
+
+        if has_pos and nsv >= 4:
+            label = "3D FIX"
+            color = GREEN
+        elif has_pos and nsv > 0:
+            label = "2D FIX"
+            color = YELLOW
+        elif nvis > 0 or nsv > 0:
+            label = "SEARCHING"
+            color = YELLOW
+        else:
+            label = "NO FIX"
+            color = RED
+
+        p.save()
+        font = p.font()
+        font.setPixelSize(max(10, int(hsi_rect.height() * 0.08)))
+        font.setBold(True)
+        p.setFont(font)
+
+        text = f"GNSS: {label}"
+        fm = QFontMetrics(font)
+        tw = fm.horizontalAdvance(text)
+        th = fm.height()
+        pad = 4
+
+        x = hsi_rect.left() + 4
+        y = hsi_rect.bottom() - th - pad * 2 - 4
+
+        p.setPen(QPen(QColor(160, 160, 160), 1))
+        p.setBrush(QColor(20, 22, 28, 160))
+        p.drawRect(x, y, tw + pad * 2, th + pad * 2)
+
+        p.setPen(QPen(color))
+        p.drawText(x + pad, y + pad + fm.ascent(), text)
+        p.restore()
 
     # ─────────── Fail flag ───────────
 
@@ -425,13 +509,28 @@ class PFDWidget(QWidget):
         # Pitch shift: negate so nose-up (positive pitch) moves horizon down
         pitch_shift = -self._pitch * pitch_px_per_deg
 
-        # Sky & ground
         big = size * 3
-        p.fillRect(QRectF(-big, -big + pitch_shift, big * 2, big), SKY)
-        p.fillRect(QRectF(-big, pitch_shift, big * 2, big), GROUND)
+        synvis_active = self._synvis_enabled and self._terrain and self._gnss_has_pos
 
-        # Horizon line
-        p.setPen(QPen(FG, 2.5))
+        if synvis_active:
+            # Gradient sky replacing flat color
+            from PyQt6.QtGui import QLinearGradient
+            sky_grad = QLinearGradient(0, -big + pitch_shift, 0, pitch_shift)
+            sky_grad.setColorAt(0.0, QColor(0x1A, 0x60, 0xB0))  # deep blue top
+            sky_grad.setColorAt(0.7, QColor(0x5C, 0xB8, 0xE8))  # lighter
+            sky_grad.setColorAt(1.0, QColor(0x9C, 0xD4, 0xF0))  # horizon haze
+            p.fillRect(QRectF(-big, -big + pitch_shift, big * 2, big), QBrush(sky_grad))
+            # Dark base fill below horizon (terrain draws on top)
+            p.fillRect(QRectF(-big, pitch_shift, big * 2, big), QColor(30, 50, 30))
+            # Draw 3D terrain
+            self._draw_synvis(p, pitch_shift, pitch_px_per_deg, size, r)
+        else:
+            # Standard flat sky & ground
+            p.fillRect(QRectF(-big, -big + pitch_shift, big * 2, big), SKY)
+            p.fillRect(QRectF(-big, pitch_shift, big * 2, big), GROUND)
+
+        # Horizon line (thinner in synvis mode)
+        p.setPen(QPen(FG, 1.0 if synvis_active else 2.5))
         p.drawLine(QPointF(-big, pitch_shift), QPointF(big, pitch_shift))
 
         # Pitch ladder
@@ -446,6 +545,198 @@ class PFDWidget(QWidget):
         # Flight Path Vector — only drawn when airborne/moving
         if self._fpv_visible:
             self._draw_fpv(p, r, pitch_px_per_deg)
+
+    def _draw_synvis(self, p: QPainter, pitch_shift, px_per_deg, size, att_rect=None):
+        """Draw full 3D forward-looking terrain replacing flat ground."""
+        # Compute new target grid when state changes enough
+        need_new_target = self._synvis_grid_tgt is None and not self._synvis_frozen
+        if not need_new_target and self._synvis_last_hdg is not None:
+            hdg_diff = abs(((self._heading - self._synvis_last_hdg + 180) % 360) - 180)
+            if hdg_diff > 1.0:
+                need_new_target = True
+        if not need_new_target and self._synvis_last_lat is not None:
+            dlat = abs(self._gnss_lat - self._synvis_last_lat) * 111320
+            dlon = abs(self._gnss_lon - self._synvis_last_lon) * 111320 * max(0.01, math.cos(math.radians(self._gnss_lat)))
+            if dlat > 30 or dlon > 30:
+                need_new_target = True
+        if not need_new_target and self._synvis_last_alt is not None:
+            if abs(self._altitude - self._synvis_last_alt) > 5:
+                need_new_target = True
+
+        if need_new_target:
+            new_grid = self._terrain.get_elevation_grid(
+                self._gnss_lat, self._gnss_lon, self._heading,
+                self._synvis_fov_h, 45.0, self._synvis_range,
+                self._synvis_grid_w, self._synvis_grid_h,
+                self._altitude, self._pitch
+            )
+            if new_grid:
+                if self._synvis_grid_cur is None:
+                    # First grid — use directly, no blend
+                    self._synvis_grid_cur = new_grid
+                    self._synvis_blend = 1.0
+                else:
+                    self._synvis_grid_tgt = new_grid
+                    self._synvis_blend = 0.0
+                self._synvis_last_hdg = self._heading
+                self._synvis_last_lat = self._gnss_lat
+                self._synvis_last_lon = self._gnss_lon
+                self._synvis_last_alt = self._altitude
+
+        # Blend current grid toward target
+        if self._synvis_grid_tgt is not None and self._synvis_blend < 1.0:
+            self._synvis_blend = min(1.0, self._synvis_blend + self._synvis_blend_rate)
+            b = self._synvis_blend
+            gh = len(self._synvis_grid_cur)
+            gw = len(self._synvis_grid_cur[0]) if gh > 0 else 0
+            blended = []
+            for row_idx in range(gh):
+                row = []
+                for col_idx in range(gw):
+                    e_old, d_old = self._synvis_grid_cur[row_idx][col_idx]
+                    e_new, d_new = self._synvis_grid_tgt[row_idx][col_idx]
+                    row.append((e_old + b * (e_new - e_old), d_old + b * (d_new - d_old)))
+                blended.append(row)
+            self._synvis_grid_cur = blended
+            if self._synvis_blend >= 1.0:
+                self._synvis_grid_cur = self._synvis_grid_tgt
+                self._synvis_grid_tgt = None
+
+        grid = self._synvis_grid_cur
+        if not grid:
+            return
+
+        gw = self._synvis_grid_w
+        gh = self._synvis_grid_h
+        aircraft_alt = self._altitude
+        view_half_w = size * 2.0  # wide enough to fill the attitude area
+
+        # Project a 3D terrain point to screen pixel coordinates.
+        # h_frac: -0.5 (left) to +0.5 (right), dist: meters forward, elev: MSL meters
+        def project(elev, dist, h_frac):
+            d = max(20, dist)
+            # Horizontal: perspective division — wider spread at close range
+            px_x = h_frac * view_half_w * 2.0 * (500.0 / (d + 500.0))
+            # Vertical: elevation angle from aircraft eye to terrain point
+            rel_elev = elev - aircraft_alt
+            elev_angle = math.degrees(math.atan2(rel_elev, d))
+            px_y = pitch_shift - elev_angle * px_per_deg
+            return QPointF(px_x, px_y)
+
+        # Sun direction for shading (from upper-left-forward)
+        sun_x, sun_y, sun_z = -0.4, -0.3, 0.86
+
+        # --- Draw filled terrain quads (far to near = back to front) ---
+        for row_idx in range(gh - 1):
+            far_row = grid[row_idx]
+            near_row = grid[row_idx + 1]
+
+            for col_idx in range(gw - 1):
+                e_fl, d_fl = far_row[col_idx]
+                e_fr, d_fr = far_row[col_idx + 1]
+                e_nl, d_nl = near_row[col_idx]
+                e_nr, d_nr = near_row[col_idx + 1]
+
+                hf_l = (col_idx / max(1, gw - 1)) - 0.5
+                hf_r = ((col_idx + 1) / max(1, gw - 1)) - 0.5
+
+                p_fl = project(e_fl, d_fl, hf_l)
+                p_fr = project(e_fr, d_fr, hf_r)
+                p_nr = project(e_nr, d_nr, hf_r)
+                p_nl = project(e_nl, d_nl, hf_l)
+
+                avg_elev = (e_fl + e_fr + e_nl + e_nr) * 0.25
+                avg_dist = (d_fl + d_fr + d_nl + d_nr) * 0.25
+                rel = avg_elev - aircraft_alt
+
+                # Surface normal from elevation differences for shading
+                dx_elev = ((e_fr + e_nr) - (e_fl + e_nl)) * 0.5
+                dy_elev = ((e_nl + e_nr) - (e_fl + e_fr)) * 0.5
+                nx, ny, nz = -dx_elev * 0.01, -dy_elev * 0.01, 1.0
+                nmag = math.sqrt(nx*nx + ny*ny + nz*nz)
+                if nmag > 0:
+                    nx /= nmag; ny /= nmag; nz /= nmag
+                shade = max(0.3, min(1.0, nx*sun_x + ny*sun_y + nz*sun_z))
+
+                # TAWS-style altitude-relative coloring:
+                #   > 0m above aircraft:    RED     (immediate hazard)
+                #   0 to -100m:             AMBER   (caution)
+                #   -100 to -300m:          YELLOW  (awareness)
+                #   -300 to -1000m:         GREEN   (safe, darker with distance below)
+                #   < -1000m:               DARK GREEN (well below)
+                if rel > 0:
+                    # RED — terrain above aircraft
+                    cr, cg, cb = 200, 40, 40
+                elif rel > -100:
+                    # AMBER — close below
+                    t = 1.0 - (-rel / 100.0)
+                    cr = int(200 - t * 0 + (1-t) * 0)
+                    cg = int(40 + (1-t) * 120)
+                    cb = int(40)
+                    cr, cg, cb = int(200*(t) + 210*(1-t)), int(40*t + 160*(1-t)), int(40*t + 30*(1-t))
+                elif rel > -300:
+                    # YELLOW to GREEN transition
+                    t = (-rel - 100) / 200.0  # 0=yellow, 1=green
+                    cr = int(210 * (1-t) + 50 * t)
+                    cg = int(160 * (1-t) + 160 * t)
+                    cb = int(30 * (1-t) + 30 * t)
+                elif rel > -1000:
+                    # GREEN — safe terrain below
+                    t = (-rel - 300) / 700.0  # 0=bright green, 1=dark green
+                    cr = int(50 - t * 20)
+                    cg = int(160 - t * 60)
+                    cb = int(30 + t * 10)
+                else:
+                    # DARK GREEN — well below
+                    cr, cg, cb = 25, 80, 35
+
+                cr = int(cr * shade); cg = int(cg * shade); cb = int(cb * shade)
+
+                # Distance haze — fade toward horizon sky color
+                haze = min(1.0, (avg_dist / self._synvis_range) ** 1.5)
+                cr = int(cr*(1-haze) + 0x9C*haze)
+                cg = int(cg*(1-haze) + 0xD4*haze)
+                cb = int(cb*(1-haze) + 0xF0*haze)
+
+                color = QColor(max(0,min(255,cr)), max(0,min(255,cg)), max(0,min(255,cb)))
+                poly = QPolygonF([p_fl, p_fr, p_nr, p_nl])
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(color)
+                p.drawPolygon(poly)
+
+        # --- Grid overlay ---
+        grid_pen = QPen(QColor(255, 255, 255, 40), 0.5)
+        p.setPen(grid_pen)
+        p.setBrush(Qt.BrushStyle.NoBrush)
+
+        # Horizontal lines (distance rings)
+        step_r = max(1, gh // 8)
+        for row_idx in range(0, gh, step_r):
+            row_data = grid[row_idx]
+            path = QPainterPath()
+            for col_idx in range(gw):
+                hf = (col_idx / max(1, gw - 1)) - 0.5
+                elev, dist = row_data[col_idx]
+                pt = project(elev, dist, hf)
+                if col_idx == 0:
+                    path.moveTo(pt)
+                else:
+                    path.lineTo(pt)
+            p.drawPath(path)
+
+        # Vertical lines (bearing lines)
+        step_c = max(1, gw // 10)
+        for col_idx in range(0, gw, step_c):
+            hf = (col_idx / max(1, gw - 1)) - 0.5
+            path = QPainterPath()
+            for row_idx in range(gh):
+                elev, dist = grid[row_idx][col_idx]
+                pt = project(elev, dist, hf)
+                if row_idx == 0:
+                    path.moveTo(pt)
+                else:
+                    path.lineTo(pt)
+            p.drawPath(path)
 
     def _draw_pitch_ladder(self, p: QPainter, px_per_deg, pitch_shift, size):
         """Pitch ladder: 10° major with labels, 5° minor, 2.5° minor
@@ -691,23 +982,29 @@ class PFDWidget(QWidget):
 
     def _draw_speed_tape(self, p: QPainter, r: QRect):
         p.save()
-        p.setClipRect(r)
-        p.fillRect(r, TAPE_BG)
 
         if self._metric:
             speed_disp = self._speed * 3.6   # m/s → km/h
             major, minor = 10, 5             # tick spacing
             span = 80.0                      # visible range
-            label = "GS km/h"
+            gs_unit = "KM/H"
         else:
             speed_disp = self._speed * 1.94384  # m/s → knots
             major, minor = 10, 5
             span = 60.0                      # 60 kt visible
-            label = "GS KT"
+            gs_unit = "KT"
 
-        cy = r.center().y()
-        tape_w = r.width()
-        px_per_unit = r.height() / span
+        # Reserve bottom strip for GS readout
+        gs_strip_h = max(20, int(r.height() * 0.045))
+        tape_r = QRect(r.left(), r.top(), r.width(), r.height() - gs_strip_h)
+        gs_r = QRect(r.left(), tape_r.bottom(), r.width(), gs_strip_h)
+
+        p.setClipRect(tape_r)
+        p.fillRect(tape_r, TAPE_BG)
+
+        cy = tape_r.center().y()
+        tape_w = tape_r.width()
+        px_per_unit = tape_r.height() / span
 
         # ── V-speed color bands (right edge of tape) ──
         # V-speeds are stored in knots — convert to display units
@@ -724,8 +1021,8 @@ class PFDWidget(QWidget):
             def _band(v_lo, v_hi, color):
                 yt = cy - (v_hi - speed_disp) * px_per_unit
                 yb = cy - (v_lo - speed_disp) * px_per_unit
-                yt = max(r.top(), min(r.bottom(), yt))
-                yb = max(r.top(), min(r.bottom(), yb))
+                yt = max(tape_r.top(), min(tape_r.bottom(), yt))
+                yb = max(tape_r.top(), min(tape_r.bottom(), yb))
                 if yb > yt:
                     p.fillRect(QRectF(tape_w - bw, yt, bw, yb - yt), color)
 
@@ -736,21 +1033,21 @@ class PFDWidget(QWidget):
 
             # Vne red line
             y_vne = cy - (v_vne - speed_disp) * px_per_unit
-            if r.top() < y_vne < r.bottom():
+            if tape_r.top() < y_vne < tape_r.bottom():
                 p.setPen(QPen(RED, 3.0))
                 p.drawLine(QPointF(tape_w - bw - 4, y_vne), QPointF(tape_w, y_vne))
 
             # 45° red/white barber-pole above Vne (overspeed)
             # Stripes are anchored to the tape so they scroll with speed.
-            y_vne_clamp = max(r.top(), min(r.bottom(), y_vne))
-            if y_vne_clamp > r.top():
+            y_vne_clamp = max(tape_r.top(), min(tape_r.bottom(), y_vne))
+            if y_vne_clamp > tape_r.top():
                 p.save()
-                p.setClipRect(QRectF(tape_w - bw, r.top(), bw, y_vne_clamp - r.top()))
+                p.setClipRect(QRectF(tape_w - bw, tape_r.top(), bw, y_vne_clamp - tape_r.top()))
                 stripe = bw  # stripe width = band width → 45° diagonals
                 # Phase offset: anchor stripes to speed so they move with tape
                 phase = (speed_disp * px_per_unit) % (stripe * 2)
                 # Draw diagonal stripes by filling angled parallelograms
-                y_start = r.top() - bw - stripe * 2 + phase
+                y_start = tape_r.top() - bw - stripe * 2 + phase
                 while y_start < y_vne_clamp:
                     for color, offset in [(RED, 0), (FG, stripe)]:
                         y0 = y_start + offset
@@ -781,7 +1078,7 @@ class PFDWidget(QWidget):
                 if v < 0:
                     continue
                 y = cy - (v - speed_disp) * px_per_unit
-                if y < r.top() - 10 or y > r.bottom() + 10:
+                if y < tape_r.top() - 10 or y > tape_r.bottom() + 10:
                     continue
                 if v % major == 0:
                     p.setPen(QPen(FG, 1.5))
@@ -830,18 +1127,61 @@ class PFDWidget(QWidget):
         box_r = QRectF(2, cy - box_h / 2, tape_w - arrow_w - 2, box_h)
         self._draw_drum_pointer(p, drum_spd, 3, cy, ptr_font_sz, box_r, x_text)
 
-        small_font = QFont("Monospace", max(7, int(tape_w * 0.10)))
-        p.setFont(small_font)
-        p.setPen(QPen(FG_DIM, 1))
-        p.drawText(QPointF(4, r.bottom() - 4), label)
+        # GS readout box at the bottom of the speed tape
+        p.setClipping(False)
+
+        # Dynamically scale font to fit "GS 000 KM/H" within the box width
+        avail_w = gs_r.width() - 6  # padding
+        test_text = f"GS 000 {gs_unit}"
+        gs_font_sz = max(5, int(gs_strip_h * 0.55))
+        while gs_font_sz > 5:
+            test_font = QFont("Monospace", gs_font_sz)
+            test_font.setBold(True)
+            if QFontMetrics(test_font).horizontalAdvance(test_text) <= avail_w:
+                break
+            gs_font_sz -= 1
+
+        gs_font = QFont("Monospace", gs_font_sz)
+        gs_font.setBold(True)
+        gs_fm = QFontMetrics(gs_font)
+
+        unit_font_sz = max(4, int(gs_font_sz * 0.7))
+        unit_font = QFont("Monospace", unit_font_sz)
+        unit_fm = QFontMetrics(unit_font)
+
+        p.setPen(QPen(QColor(160, 160, 160), 1))
+        p.setBrush(QColor(20, 22, 28, 160))
+        p.drawRect(gs_r)
+
+        baseline_y = gs_r.top() + gs_fm.ascent() + (gs_strip_h - gs_fm.height()) // 2
+        pad = 3
+        x = gs_r.left() + pad
+
+        # "GS" label
+        p.setPen(QPen(FG))
+        p.setFont(gs_font)
+        p.drawText(x, baseline_y, "GS")
+        x += gs_fm.horizontalAdvance("GS") + gs_fm.horizontalAdvance(" ")
+
+        # Fixed-width numeric value
+        char_w = gs_fm.horizontalAdvance("0")
+        spd_str = f"{int(round(speed_disp)):3d}"
+        for ch in spd_str:
+            if ch != ' ':
+                p.drawText(x, baseline_y, ch)
+            x += char_w
+
+        # Unit with a small gap
+        x += max(2, char_w // 4)
+        p.setFont(unit_font)
+        p.setPen(QPen(FG_DIM))
+        p.drawText(x, baseline_y, gs_unit)
         p.restore()
 
     # ─────────── Altitude tape ───────────
 
     def _draw_altitude_tape(self, p: QPainter, r: QRect):
         p.save()
-        p.setClipRect(r)
-        p.fillRect(r, TAPE_BG)
 
         if self._metric:
             alt_disp = self._altitude            # meters
@@ -856,10 +1196,17 @@ class PFDWidget(QWidget):
             src = "GNSS" if self._alt_source == "gnss" else "ALT"
             label = f"{src} ft"
 
-        cy = r.center().y()
-        tape_w = r.width()
-        px_per_unit = r.height() / span
-        x0 = r.left()
+        # Reserve same bottom strip as speed tape so pointers align
+        label_strip_h = max(20, int(r.height() * 0.045))
+        tape_r = QRect(r.left(), r.top(), r.width(), r.height() - label_strip_h)
+
+        p.setClipRect(tape_r)
+        p.fillRect(tape_r, TAPE_BG)
+
+        cy = tape_r.center().y()
+        tape_w = tape_r.width()
+        px_per_unit = tape_r.height() / span
+        x0 = tape_r.left()
 
         tick_font_sz = max(8, int(tape_w * 0.10))
         font = QFont("Monospace", tick_font_sz)
@@ -874,7 +1221,7 @@ class PFDWidget(QWidget):
             for sub in range(0, major, minor):
                 v = base + i * major + sub
                 y = cy - (v - alt_disp) * px_per_unit
-                if y < r.top() - 10 or y > r.bottom() + 10:
+                if y < tape_r.top() - 10 or y > tape_r.bottom() + 10:
                     continue
                 if v % major == 0:
                     p.setPen(QPen(FG, 1.5))
@@ -923,10 +1270,31 @@ class PFDWidget(QWidget):
         box_r = QRectF(x0 + arrow_w, cy - box_h / 2, tape_w - arrow_w - 2, box_h)
         self._draw_drum_pointer(p, drum_alt, 5, cy, ptr_font_sz, box_r, x_text)
 
-        small_font = QFont("Monospace", max(7, int(tape_w * 0.10)))
-        p.setFont(small_font)
-        p.setPen(QPen(FG_DIM, 1))
-        p.drawText(QPointF(x0 + 4, r.bottom() - 4), label)
+        # Label strip at bottom (matches speed tape GS strip)
+        p.setClipping(False)
+        label_r = QRect(r.left(), tape_r.bottom(), r.width(), label_strip_h)
+        p.setPen(QPen(QColor(160, 160, 160), 1))
+        p.setBrush(QColor(20, 22, 28, 160))
+        p.drawRect(label_r)
+
+        # Auto-scale font to fit label within strip
+        avail_lw = label_r.width() - 6
+        lbl_font_sz = max(5, int(label_strip_h * 0.55))
+        while lbl_font_sz > 5:
+            test_f = QFont("Monospace", lbl_font_sz)
+            test_f.setBold(True)
+            if QFontMetrics(test_f).horizontalAdvance(label) <= avail_lw:
+                break
+            lbl_font_sz -= 1
+        lbl_font = QFont("Monospace", lbl_font_sz)
+        lbl_font.setBold(True)
+        p.setFont(lbl_font)
+        lfm = QFontMetrics(lbl_font)
+        p.setPen(QPen(FG_DIM))
+        # Right-align the label
+        lbl_w = lfm.horizontalAdvance(label)
+        p.drawText(label_r.right() - lbl_w - 3,
+                   label_r.top() + lfm.ascent() + (label_strip_h - lfm.height()) // 2, label)
         p.restore()
 
     # ─────────── Vertical Speed Indicator ───────────
@@ -1011,7 +1379,7 @@ class PFDWidget(QWidget):
                        Qt.AlignmentFlag.AlignCenter, vtxt)
         else:
             # Small triangle pointer
-            tri_h = max(4, int(vw * 0.25))
+            tri_h = max(8, int(vw * 0.50))
             tri = QPolygonF([
                 QPointF(x0, ptr_y),
                 QPointF(x0 + tri_h, ptr_y - tri_h / 2),
@@ -1100,6 +1468,7 @@ class PFDWidget(QWidget):
 
         # ── Heading bug (cyan rectangle with outward notch, inside rim) ──
         bug_ang = self._hdg_bug - hdg
+
         bw = radius * 0.04   # half-width
         bh = radius * 0.08   # height (inward from rim)
         notch = bh * 0.45    # depth of the outward notch
