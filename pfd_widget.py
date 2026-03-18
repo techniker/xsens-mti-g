@@ -12,6 +12,7 @@ Primary Flight Display (PFD) Widget for Xsens MTi AHRS data.
 """
 
 import math
+import time
 from PyQt6.QtWidgets import QWidget
 from PyQt6.QtCore import Qt, QRectF, QPointF, QRect
 from PyQt6.QtGui import (
@@ -116,6 +117,18 @@ class PFDWidget(QWidget):
         self._align_target = 90       # ~3 sec at 30 Hz
         self._align_done = False
         self._auto_zero_on_start = True  # zero attitude after alignment
+        self._alt_source = "baro"  # "baro" or "gnss"
+        self._vsi_source = "gnss"  # "gnss" or "baro"
+
+        # Baro VSI: differentiate LP-filtered barometric altitude.
+        # Pre-filter altitude to suppress pressure sensor noise before
+        # differentiation (which amplifies noise).
+        self._baro_alt_filtered = None  # LP-filtered baro altitude
+        self._baro_alt_lp_alpha = 0.95  # altitude pre-filter (suppress noise)
+        self._prev_baro_alt_f = None    # previous filtered altitude for derivative
+        self._prev_baro_time = None
+        self._baro_vsi = 0.0
+        self._baro_vsi_alpha = 0.985  # heavy post-filter on VSI (~2s time constant at 30 Hz)
 
     def set_data(self, data: SensorData):
         """Update attitude, heading, speed, altitude from sensor data."""
@@ -151,7 +164,6 @@ class PFDWidget(QWidget):
 
         if data.vel:
             self._valid_spd = True
-            self._valid_vsi = True
             vx, vy, vz = data.vel
             self._vx, self._vy, self._vz = vx, vy, vz
             raw_spd = math.hypot(vx, vy)
@@ -161,7 +173,10 @@ class PFDWidget(QWidget):
                 raw_spd = 0.0
             a = self._spd_lp_alpha
             self._speed = a * self._speed + (1.0 - a) * raw_spd
-            self._vsi = -vz
+            gnss_vsi = -vz
+            if self._vsi_source == "gnss":
+                self._valid_vsi = True
+                self._vsi = gnss_vsi
         elif data.speed_ms is not None:
             self._valid_spd = True
             raw_spd = data.speed_ms
@@ -170,12 +185,44 @@ class PFDWidget(QWidget):
             a = self._spd_lp_alpha
             self._speed = a * self._speed + (1.0 - a) * raw_spd
 
+        if self._alt_source == "gnss":
+            if data.pos_alt is not None:
+                self._valid_alt = True
+                self._altitude = data.pos_alt
+            elif data.baro_alt_m is not None:
+                self._valid_alt = True
+                self._altitude = data.baro_alt_m
+        else:  # "baro"
+            if data.baro_alt_m is not None:
+                self._valid_alt = True
+                self._altitude = data.baro_alt_m
+            elif data.pos_alt is not None:
+                self._valid_alt = True
+                self._altitude = data.pos_alt
+
+        # Baro-derived VSI: two-stage filter then differentiate.
+        # Stage 1: LP filter raw baro altitude to suppress sensor noise.
+        # Stage 2: differentiate filtered altitude, then LP the result.
         if data.baro_alt_m is not None:
-            self._valid_alt = True
-            self._altitude = data.baro_alt_m
-        elif data.pos_alt is not None:
-            self._valid_alt = True
-            self._altitude = data.pos_alt
+            now = time.monotonic()
+            # Pre-filter altitude
+            if self._baro_alt_filtered is None:
+                self._baro_alt_filtered = data.baro_alt_m
+            else:
+                a1 = self._baro_alt_lp_alpha
+                self._baro_alt_filtered = a1 * self._baro_alt_filtered + (1.0 - a1) * data.baro_alt_m
+            # Differentiate filtered altitude
+            if self._prev_baro_alt_f is not None and self._prev_baro_time is not None:
+                dt = now - self._prev_baro_time
+                if dt > 0.001:
+                    raw_baro_vsi = (self._baro_alt_filtered - self._prev_baro_alt_f) / dt
+                    a2 = self._baro_vsi_alpha
+                    self._baro_vsi = a2 * self._baro_vsi + (1.0 - a2) * raw_baro_vsi
+                    if self._vsi_source == "baro":
+                        self._valid_vsi = True
+                        self._vsi = self._baro_vsi
+            self._prev_baro_alt_f = self._baro_alt_filtered
+            self._prev_baro_time = now
 
         # AHRS alignment: count valid attitude samples
         if not self._align_done and self._valid_att:
@@ -800,12 +847,14 @@ class PFDWidget(QWidget):
             alt_disp = self._altitude            # meters
             major, minor = 50, 10                # tick spacing
             span = 300.0                         # visible range
-            label = "ALT m"
+            src = "GNSS" if self._alt_source == "gnss" else "ALT"
+            label = f"{src} m"
         else:
             alt_disp = self._altitude * 3.28084  # feet
             major, minor = 100, 20
             span = 600.0
-            label = "ALT ft"
+            src = "GNSS" if self._alt_source == "gnss" else "ALT"
+            label = f"{src} ft"
 
         cy = r.center().y()
         tape_w = r.width()
