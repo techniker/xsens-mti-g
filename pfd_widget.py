@@ -130,6 +130,11 @@ class PFDWidget(QWidget):
         self._baro_vsi = 0.0
         self._baro_vsi_alpha = 0.985  # heavy post-filter on VSI (~2s time constant at 30 Hz)
 
+        # GNSS fix status (derived from available data)
+        self._gnss_nsv_used = 0   # SVs used in solution (bGPS field = numSV)
+        self._gnss_nsv_visible = 0  # SVs with signal (from GPS status channels)
+        self._gnss_has_pos = False  # valid position received
+
     def set_data(self, data: SensorData):
         """Update attitude, heading, speed, altitude from sensor data."""
         if self._att_source == "accel" and data.acc:
@@ -247,6 +252,15 @@ class PFDWidget(QWidget):
             self._fpv_x = 0.0
             self._fpv_y = 0.0
 
+        # GNSS status: bGPS = numSV (satellites used in solution)
+        if data.rawgps and data.rawgps.bGPS is not None:
+            self._gnss_nsv_used = data.rawgps.bGPS
+        if data.rawgps and data.rawgps.lat_deg is not None:
+            # Position is valid if coordinates are non-zero
+            self._gnss_has_pos = (data.rawgps.lat_deg != 0.0 or data.rawgps.lon_deg != 0.0)
+        if data.gps_status:
+            self._gnss_nsv_visible = sum(1 for ch in data.gps_status.channels if ch.cnr > 0)
+
         self.update()
 
     def zero_attitude(self):
@@ -338,7 +352,53 @@ class PFDWidget(QWidget):
         if not self._valid_hdg:
             self._draw_fail_flag(p, layout['hsi'], "HDG")
 
+        self._draw_gnss_status(p, layout['hsi'])
+
         p.end()
+
+    # ─────────── GNSS fix status ───────────
+
+    def _draw_gnss_status(self, p: QPainter, hsi_rect: QRect):
+        """Draw GNSS fix status in the lower-left corner of the HSI area."""
+        nsv = self._gnss_nsv_used
+        has_pos = self._gnss_has_pos
+        nvis = self._gnss_nsv_visible
+
+        if has_pos and nsv >= 4:
+            label = "3D FIX"
+            color = GREEN
+        elif has_pos and nsv > 0:
+            label = "2D FIX"
+            color = YELLOW
+        elif nvis > 0 or nsv > 0:
+            label = "SEARCHING"
+            color = YELLOW
+        else:
+            label = "NO FIX"
+            color = RED
+
+        p.save()
+        font = p.font()
+        font.setPixelSize(max(10, int(hsi_rect.height() * 0.08)))
+        font.setBold(True)
+        p.setFont(font)
+
+        text = f"GNSS: {label}"
+        fm = QFontMetrics(font)
+        tw = fm.horizontalAdvance(text)
+        th = fm.height()
+        pad = 4
+
+        x = hsi_rect.left() + 4
+        y = hsi_rect.bottom() - th - pad * 2 - 4
+
+        p.setPen(QPen(QColor(160, 160, 160), 1))
+        p.setBrush(QColor(20, 22, 28, 160))
+        p.drawRect(x, y, tw + pad * 2, th + pad * 2)
+
+        p.setPen(QPen(color))
+        p.drawText(x + pad, y + pad + fm.ascent(), text)
+        p.restore()
 
     # ─────────── Fail flag ───────────
 
@@ -691,23 +751,29 @@ class PFDWidget(QWidget):
 
     def _draw_speed_tape(self, p: QPainter, r: QRect):
         p.save()
-        p.setClipRect(r)
-        p.fillRect(r, TAPE_BG)
 
         if self._metric:
             speed_disp = self._speed * 3.6   # m/s → km/h
             major, minor = 10, 5             # tick spacing
             span = 80.0                      # visible range
-            label = "GS km/h"
+            gs_unit = "KM/H"
         else:
             speed_disp = self._speed * 1.94384  # m/s → knots
             major, minor = 10, 5
             span = 60.0                      # 60 kt visible
-            label = "GS KT"
+            gs_unit = "KT"
 
-        cy = r.center().y()
-        tape_w = r.width()
-        px_per_unit = r.height() / span
+        # Reserve bottom strip for GS readout
+        gs_strip_h = max(20, int(r.height() * 0.045))
+        tape_r = QRect(r.left(), r.top(), r.width(), r.height() - gs_strip_h)
+        gs_r = QRect(r.left(), tape_r.bottom(), r.width(), gs_strip_h)
+
+        p.setClipRect(tape_r)
+        p.fillRect(tape_r, TAPE_BG)
+
+        cy = tape_r.center().y()
+        tape_w = tape_r.width()
+        px_per_unit = tape_r.height() / span
 
         # ── V-speed color bands (right edge of tape) ──
         # V-speeds are stored in knots — convert to display units
@@ -724,8 +790,8 @@ class PFDWidget(QWidget):
             def _band(v_lo, v_hi, color):
                 yt = cy - (v_hi - speed_disp) * px_per_unit
                 yb = cy - (v_lo - speed_disp) * px_per_unit
-                yt = max(r.top(), min(r.bottom(), yt))
-                yb = max(r.top(), min(r.bottom(), yb))
+                yt = max(tape_r.top(), min(tape_r.bottom(), yt))
+                yb = max(tape_r.top(), min(tape_r.bottom(), yb))
                 if yb > yt:
                     p.fillRect(QRectF(tape_w - bw, yt, bw, yb - yt), color)
 
@@ -736,21 +802,21 @@ class PFDWidget(QWidget):
 
             # Vne red line
             y_vne = cy - (v_vne - speed_disp) * px_per_unit
-            if r.top() < y_vne < r.bottom():
+            if tape_r.top() < y_vne < tape_r.bottom():
                 p.setPen(QPen(RED, 3.0))
                 p.drawLine(QPointF(tape_w - bw - 4, y_vne), QPointF(tape_w, y_vne))
 
             # 45° red/white barber-pole above Vne (overspeed)
             # Stripes are anchored to the tape so they scroll with speed.
-            y_vne_clamp = max(r.top(), min(r.bottom(), y_vne))
-            if y_vne_clamp > r.top():
+            y_vne_clamp = max(tape_r.top(), min(tape_r.bottom(), y_vne))
+            if y_vne_clamp > tape_r.top():
                 p.save()
-                p.setClipRect(QRectF(tape_w - bw, r.top(), bw, y_vne_clamp - r.top()))
+                p.setClipRect(QRectF(tape_w - bw, tape_r.top(), bw, y_vne_clamp - tape_r.top()))
                 stripe = bw  # stripe width = band width → 45° diagonals
                 # Phase offset: anchor stripes to speed so they move with tape
                 phase = (speed_disp * px_per_unit) % (stripe * 2)
                 # Draw diagonal stripes by filling angled parallelograms
-                y_start = r.top() - bw - stripe * 2 + phase
+                y_start = tape_r.top() - bw - stripe * 2 + phase
                 while y_start < y_vne_clamp:
                     for color, offset in [(RED, 0), (FG, stripe)]:
                         y0 = y_start + offset
@@ -781,7 +847,7 @@ class PFDWidget(QWidget):
                 if v < 0:
                     continue
                 y = cy - (v - speed_disp) * px_per_unit
-                if y < r.top() - 10 or y > r.bottom() + 10:
+                if y < tape_r.top() - 10 or y > tape_r.bottom() + 10:
                     continue
                 if v % major == 0:
                     p.setPen(QPen(FG, 1.5))
@@ -830,10 +896,52 @@ class PFDWidget(QWidget):
         box_r = QRectF(2, cy - box_h / 2, tape_w - arrow_w - 2, box_h)
         self._draw_drum_pointer(p, drum_spd, 3, cy, ptr_font_sz, box_r, x_text)
 
-        small_font = QFont("Monospace", max(7, int(tape_w * 0.10)))
-        p.setFont(small_font)
-        p.setPen(QPen(FG_DIM, 1))
-        p.drawText(QPointF(4, r.bottom() - 4), label)
+        # GS readout box at the bottom of the speed tape
+        p.setClipping(False)
+        gs_font_sz = max(6, int(gs_strip_h * 0.5))
+        gs_font = QFont("Monospace", gs_font_sz)
+        gs_font.setBold(True)
+        p.setFont(gs_font)
+        gs_fm = QFontMetrics(gs_font)
+
+        unit_font = QFont("Monospace", max(5, int(gs_strip_h * 0.35)))
+        unit_fm = QFontMetrics(unit_font)
+
+        p.setPen(QPen(QColor(160, 160, 160), 1))
+        p.setBrush(QColor(20, 22, 28, 160))
+        p.drawRect(gs_r)
+
+        baseline_y = gs_r.top() + gs_fm.ascent() + (gs_strip_h - gs_fm.height()) // 2
+        pad = 3
+        right_edge = gs_r.right() - pad
+
+        # Layout right-to-left: unit, then value, then "GS" label
+        unit_w = unit_fm.horizontalAdvance(gs_unit)
+        unit_x = right_edge - unit_w
+
+        char_w = gs_fm.horizontalAdvance("0")
+        val_w = char_w * 3
+        val_x = unit_x - val_w - 2
+
+        gs_x = gs_r.left() + pad
+
+        # Draw "GS" label
+        p.setPen(QPen(FG))
+        p.setFont(gs_font)
+        p.drawText(gs_x, baseline_y, "GS")
+
+        # Draw fixed-width numeric value
+        spd_str = f"{int(round(speed_disp)):3d}"
+        x = val_x
+        for ch in spd_str:
+            if ch != ' ':
+                p.drawText(x, baseline_y, ch)
+            x += char_w
+
+        # Draw unit (right-aligned to box edge)
+        p.setFont(unit_font)
+        p.setPen(QPen(FG_DIM))
+        p.drawText(unit_x, baseline_y, gs_unit)
         p.restore()
 
     # ─────────── Altitude tape ───────────
