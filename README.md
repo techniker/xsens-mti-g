@@ -5,6 +5,16 @@ Full-featured PFD (Primary Flight Display) driven by an Xsens MTi-G IMU/GPS over
 ![Python](https://img.shields.io/badge/python-3.10+-blue)
 ![License](https://img.shields.io/badge/license-AGPL--3.0-blue)
 
+<p align="center">
+  <img src="img/example/ahrs_full_d.png" alt="Fullscreen with debug panels" width="720"><br>
+  <em>Fullscreen with debug panels and GPS satellite view</em>
+</p>
+
+<p align="center">
+  <img src="img/example/ahrs_windowed.png" alt="Windowed mode" width="420"><br>
+  <em>Windowed mode</em>
+</p>
+
 ## Features
 
 - **Attitude indicator** — roll/pitch derived directly from accelerometer (bypasses EKF drift), pitch ladder with 2.5° fine marks
