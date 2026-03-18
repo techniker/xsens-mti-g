@@ -39,6 +39,7 @@ import pfd_widget
 from data_panels import DataPanelWidget
 from settings_dialog import SettingsDialog
 import config
+from vario_audio import VarioAudio
 
 
 class MainWindow(QMainWindow):
@@ -92,6 +93,9 @@ class MainWindow(QMainWindow):
 
         self._debug_mode = False
 
+        # Variometer audio
+        self.vario = VarioAudio()
+
         # Keyboard shortcuts
         QShortcut(QKeySequence(Qt.Key.Key_Q), self, self.close)
         QShortcut(QKeySequence(Qt.Key.Key_Escape), self, self.close)
@@ -110,7 +114,7 @@ class MainWindow(QMainWindow):
         self._timer.start(33)
 
     def _show_settings(self):
-        dlg = SettingsDialog(self.sensor, self.pfd, self)
+        dlg = SettingsDialog(self.sensor, self.pfd, self.vario, self)
         dlg.exec()
 
     def _toggle_debug(self):
@@ -172,6 +176,7 @@ class MainWindow(QMainWindow):
 
         self.pfd.set_data(data)
         self.data_panel.update_data(data)
+        self.vario.update_vsi(self.pfd._vsi)
 
     def closeEvent(self, event):
         # Persist user settings
@@ -189,7 +194,10 @@ class MainWindow(QMainWindow):
             "att_source": self.pfd._att_source,
             "alt_source": self.pfd._alt_source,
             "vsi_source": self.pfd._vsi_source,
+            "vario_enabled": self.vario.enabled,
+            "vario_volume": self.vario.volume,
         })
+        self.vario.enabled = False
         self.sensor.stop()
         super().closeEvent(event)
 
@@ -232,6 +240,8 @@ def main():
     window.pfd._att_source = cfg["att_source"]
     window.pfd._alt_source = cfg["alt_source"]
     window.pfd._vsi_source = cfg["vsi_source"]
+    window.vario.enabled = cfg["vario_enabled"]
+    window.vario.volume = cfg["vario_volume"]
 
     if args.windowed:
         window.resize(1600, 900)

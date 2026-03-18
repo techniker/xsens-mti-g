@@ -19,6 +19,8 @@ _DEFAULTS = {
     "att_source": "accel",
     "alt_source": "baro",  # "baro" or "gnss"
     "vsi_source": "gnss",  # "gnss" or "baro"
+    "vario_enabled": False,
+    "vario_volume": 0.7,
 }
 
 

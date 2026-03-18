@@ -9,7 +9,7 @@ from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QGroupBox, QPushButton, QComboBox, QSpinBox,
     QDoubleSpinBox, QCheckBox, QTabWidget, QWidget, QSlider,
-    QLineEdit, QMessageBox,
+    QLineEdit, QMessageBox, QScrollArea,
 )
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QFont
@@ -67,10 +67,11 @@ def _section_label(text):
 
 class SettingsDialog(QDialog):
 
-    def __init__(self, sensor, pfd, parent=None):
+    def __init__(self, sensor, pfd, vario=None, parent=None):
         super().__init__(parent)
         self.sensor = sensor
         self.pfd = pfd
+        self.vario = vario
         self.info = sensor.device_info
         self.setWindowTitle("MTi-G Settings")
         self.setMinimumSize(620, 520)
@@ -525,6 +526,9 @@ class SettingsDialog(QDialog):
 
     # ─── Display tab ───
     def _build_display_tab(self):
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("QScrollArea { border: none; }")
         w = QWidget()
         layout = QVBoxLayout(w)
 
@@ -603,6 +607,38 @@ class SettingsDialog(QDialog):
         vsi_layout.addWidget(self._vsi_combo)
         layout.addWidget(vsi_grp)
 
+        # Variometer Audio
+        if self.vario is not None:
+            vario_grp = QGroupBox("Variometer Audio")
+            vario_layout = QVBoxLayout(vario_grp)
+            vario_hint = QLabel(
+                "Glider-style vario sound: beeping tone in climb (faster = stronger lift), "
+                "continuous low tone in sink, silent in dead band."
+            )
+            vario_hint.setWordWrap(True)
+            vario_hint.setStyleSheet("color: #666; font-size: 10px;")
+            vario_layout.addWidget(vario_hint)
+            row1 = QHBoxLayout()
+            self._vario_cb = QCheckBox("Enable vario audio")
+            self._vario_cb.setChecked(self.vario.enabled)
+            self._vario_cb.toggled.connect(self._on_vario_toggled)
+            row1.addWidget(self._vario_cb)
+            vario_layout.addLayout(row1)
+            row2 = QHBoxLayout()
+            row2.addWidget(QLabel("Volume:"))
+            self._vario_vol = QSlider(Qt.Orientation.Horizontal)
+            self._vario_vol.setRange(0, 100)
+            self._vario_vol.setValue(int(self.vario.volume * 100))
+            self._vario_vol.valueChanged.connect(
+                lambda v: setattr(self.vario, 'volume', v / 100.0))
+            row2.addWidget(self._vario_vol)
+            self._vario_vol_label = _ro_label(f"{int(self.vario.volume * 100)}%")
+            self._vario_vol.valueChanged.connect(
+                lambda v: self._vario_vol_label.setText(f"{v}%"))
+            row2.addWidget(self._vario_vol_label)
+            vario_layout.addLayout(row2)
+            layout.addWidget(vario_grp)
+
         # Startup
         startup_grp = QGroupBox("Startup")
         startup_layout = QHBoxLayout(startup_grp)
@@ -665,7 +701,8 @@ class SettingsDialog(QDialog):
             keys_grid.addWidget(QLabel(desc), row, 1)
         layout.addWidget(keys_grp)
         layout.addStretch()
-        return w
+        scroll.setWidget(w)
+        return scroll
 
     def _set_qnh_from_sensor(self):
         """Set QNH to the current barometric pressure reading from the IMU."""
@@ -674,6 +711,10 @@ class SettingsDialog(QDialog):
             self._p0_spin.setValue(data.pressure_pa / 100.0)
         else:
             self._set_status("No pressure reading available")
+
+    def _on_vario_toggled(self, checked):
+        if self.vario:
+            self.vario.enabled = checked
 
     def _on_units_changed(self, idx):
         """Unit combo changed — update PFD and refresh speed band spinboxes."""
