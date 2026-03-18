@@ -12,6 +12,7 @@ Primary Flight Display (PFD) Widget for Xsens MTi AHRS data.
 """
 
 import math
+import time
 from PyQt6.QtWidgets import QWidget
 from PyQt6.QtCore import Qt, QRectF, QPointF, QRect
 from PyQt6.QtGui import (
@@ -114,6 +115,13 @@ class PFDWidget(QWidget):
         self._align_done = False
         self._auto_zero_on_start = True  # zero attitude after alignment
         self._alt_source = "baro"  # "baro" or "gnss"
+        self._vsi_source = "gnss"  # "gnss" or "baro"
+
+        # Baro VSI: differentiate barometric altitude over time
+        self._prev_baro_alt = None
+        self._prev_baro_time = None
+        self._baro_vsi = 0.0
+        self._baro_vsi_alpha = 0.85  # smoothing for baro-derived VSI
 
     def set_data(self, data: SensorData):
         """Update attitude from accelerometer (drift-free), heading from EKF."""
@@ -141,7 +149,6 @@ class PFDWidget(QWidget):
 
         if data.vel:
             self._valid_spd = True
-            self._valid_vsi = True
             vx, vy, vz = data.vel
             self._vx, self._vy, self._vz = vx, vy, vz
             raw_spd = math.hypot(vx, vy)
@@ -151,7 +158,10 @@ class PFDWidget(QWidget):
                 raw_spd = 0.0
             a = self._spd_lp_alpha
             self._speed = a * self._speed + (1.0 - a) * raw_spd
-            self._vsi = -vz
+            gnss_vsi = -vz
+            if self._vsi_source == "gnss":
+                self._valid_vsi = True
+                self._vsi = gnss_vsi
         elif data.speed_ms is not None:
             self._valid_spd = True
             raw_spd = data.speed_ms
@@ -174,6 +184,21 @@ class PFDWidget(QWidget):
             elif data.pos_alt is not None:
                 self._valid_alt = True
                 self._altitude = data.pos_alt
+
+        # Baro-derived VSI: differentiate barometric altitude over time
+        if data.baro_alt_m is not None:
+            now = time.monotonic()
+            if self._prev_baro_alt is not None and self._prev_baro_time is not None:
+                dt = now - self._prev_baro_time
+                if dt > 0.001:  # guard against zero dt
+                    raw_baro_vsi = (data.baro_alt_m - self._prev_baro_alt) / dt
+                    a = self._baro_vsi_alpha
+                    self._baro_vsi = a * self._baro_vsi + (1.0 - a) * raw_baro_vsi
+                    if self._vsi_source == "baro":
+                        self._valid_vsi = True
+                        self._vsi = self._baro_vsi
+            self._prev_baro_alt = data.baro_alt_m
+            self._prev_baro_time = now
 
         # AHRS alignment: count valid attitude samples
         if not self._align_done and self._valid_att:

@@ -570,6 +570,18 @@ class SettingsDialog(QDialog):
         alt_layout.addWidget(self._alt_combo)
         layout.addWidget(alt_grp)
 
+        # VSI source
+        vsi_grp = QGroupBox("Vertical Speed Source")
+        vsi_layout = QHBoxLayout(vsi_grp)
+        vsi_layout.addWidget(QLabel("Source:"))
+        self._vsi_combo = QComboBox()
+        self._vsi_combo.addItems(["GNSS (GPS vertical velocity)", "Barometric (pressure-derived)"])
+        self._vsi_combo.setCurrentIndex(1 if self.pfd._vsi_source == "baro" else 0)
+        self._vsi_combo.currentIndexChanged.connect(
+            lambda idx: setattr(self.pfd, '_vsi_source', "baro" if idx == 1 else "gnss"))
+        vsi_layout.addWidget(self._vsi_combo)
+        layout.addWidget(vsi_grp)
+
         # Startup
         startup_grp = QGroupBox("Startup")
         startup_layout = QHBoxLayout(startup_grp)

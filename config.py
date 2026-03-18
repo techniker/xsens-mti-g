@@ -17,6 +17,7 @@ _DEFAULTS = {
     "auto_zero_on_start": True,
     "hdg_bug": 0,
     "alt_source": "baro",  # "baro" or "gnss"
+    "vsi_source": "gnss",  # "gnss" or "baro"
 }
 
 
