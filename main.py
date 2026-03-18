@@ -29,6 +29,7 @@ import threading
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
     QLabel, QStatusBar, QPushButton, QDialog, QDoubleSpinBox, QGridLayout,
+    QSplitter, QFrame,
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QKeySequence, QShortcut
@@ -40,6 +41,7 @@ from data_panels import DataPanelWidget
 from settings_dialog import SettingsDialog
 import config
 from vario_audio import VarioAudio
+from map_widget import MapWidget
 
 
 BAR_STYLE = """
@@ -265,10 +267,34 @@ class MainWindow(QMainWindow):
         layout.setSpacing(0)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        # PFD (full width — sole visible widget in normal mode)
+        # Instrument area: PFD (left) + optional map (right) in a splitter
+        self._instrument_splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._instrument_splitter.setHandleWidth(0)
+        self._instrument_splitter.setStyleSheet("QSplitter { background: #0A0C10; }")
+
+        # PFD in a frame for border support
+        self._pfd_frame = QFrame()
+        self._pfd_frame.setContentsMargins(0, 0, 0, 0)
+        pfd_fl = QVBoxLayout(self._pfd_frame)
+        pfd_fl.setContentsMargins(0, 0, 0, 0)
+        pfd_fl.setSpacing(0)
         self.pfd = PFDWidget()
         self.pfd.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        layout.addWidget(self.pfd, 6)
+        pfd_fl.addWidget(self.pfd)
+        self._instrument_splitter.addWidget(self._pfd_frame)
+
+        # Map in a frame for border support
+        self._map_frame = QFrame()
+        self._map_frame.setContentsMargins(0, 0, 0, 0)
+        map_fl = QVBoxLayout(self._map_frame)
+        map_fl.setContentsMargins(0, 0, 0, 0)
+        map_fl.setSpacing(0)
+        self.map_view = MapWidget()
+        map_fl.addWidget(self.map_view)
+        self._instrument_splitter.addWidget(self._map_frame)
+        self._map_frame.hide()
+
+        layout.addWidget(self._instrument_splitter, 6)
 
         # Bottom bar (always visible)
         self.bottom_bar = PFDBottomBar()
@@ -293,14 +319,15 @@ class MainWindow(QMainWindow):
         bp.quit_app.connect(self.close)
 
         # Softkey assignments (G1000-style: 12 fixed positions)
-        #  0: UNITS   1: QNH   2: VARIO   3: AHRS
-        #  4-10: (reserved)   11: MENU
+        #  0: UNITS   1: QNH   2: VARIO   3: AHRS   4: MAP
+        #  5-10: (reserved)   11: MENU
         self.bottom_bar.configure(0, "US", self._toggle_units)
         self._update_units_label()
         self.bottom_bar.configure(1, "QNH", self._show_qnh)
         self.bottom_bar.configure(2, "VARIO", self._toggle_vario)
         self.bottom_bar.configure(3, "AHRS", self._show_ahrs)
-        # 4-10 reserved for future use (empty/disabled)
+        self.bottom_bar.configure(4, "MAP", self._toggle_map)
+        # 5-10 reserved for future use (empty/disabled)
         self.bottom_bar.configure(11, "MENU", self._show_settings)
 
         # Status bar (hidden by default)
@@ -347,7 +374,7 @@ class MainWindow(QMainWindow):
             self._settings_dlg.accept()
             self._settings_dlg = None
             return
-        self._settings_dlg = SettingsDialog(self.sensor, self.pfd, self.vario, self)
+        self._settings_dlg = SettingsDialog(self.sensor, self.pfd, self.vario, self.map_view, self)
         self._settings_dlg.finished.connect(lambda: setattr(self, '_settings_dlg', None))
         self._settings_dlg.show()
 
@@ -366,6 +393,41 @@ class MainWindow(QMainWindow):
     def _update_units_label(self):
         unit = "METRIC" if self.pfd._metric else "IMPERIAL"
         self.bottom_bar.button(0).setText(f"UNIT [{unit}]")
+
+    def _toggle_map(self):
+        visible = not self._map_frame.isVisible()
+        self._map_frame.setVisible(visible)
+        if visible:
+            w = self._instrument_splitter.width()
+            self._instrument_splitter.setSizes([w // 2, w // 2])
+            # Show map-context softkeys
+            self.bottom_bar.configure(5, "NORTH UP", self._toggle_map_orientation)
+            self._update_map_orientation_label()
+            self.bottom_bar.configure(6, "ZOOM +", lambda: self.map_view.set_zoom(self.map_view._zoom + 1))
+            self.bottom_bar.configure(7, "ZOOM -", lambda: self.map_view.set_zoom(self.map_view._zoom - 1))
+            self.bottom_bar.configure(8, "CTR MAP", self.map_view.center_on_aircraft)
+        else:
+            self.bottom_bar.button(5).clear()
+            self.bottom_bar.button(6).clear()
+            self.bottom_bar.button(7).clear()
+            self.bottom_bar.button(8).clear()
+        self.bottom_bar.set_indicator(4, visible)
+        self._update_split_borders()
+
+    def _toggle_map_orientation(self):
+        self.map_view.heading_up = not self.map_view.heading_up
+        self._update_map_orientation_label()
+
+    def _update_map_orientation_label(self):
+        label = "HDG UP" if self.map_view.heading_up else "NORTH UP"
+        self.bottom_bar.button(5).setText(label)
+        self.bottom_bar.button(5).setEnabled(True)
+
+    def _update_split_borders(self):
+        visible = self.map_view.isVisible()
+        border = "border: 1px solid #555;" if visible else "border: none;"
+        self._pfd_frame.setStyleSheet(f"QFrame {{ {border} }}")
+        self._map_frame.setStyleSheet(f"QFrame {{ {border} }}")
 
     def _toggle_vario(self):
         self.vario.enabled = not self.vario.enabled
@@ -432,6 +494,12 @@ class MainWindow(QMainWindow):
         self.data_panel.update_data(data)
         self.vario.update_vsi(self.pfd._vsi)
 
+        # Feed map with position
+        if self._map_frame.isVisible() and data.rawgps:
+            rg = data.rawgps
+            if rg.lat_deg is not None and rg.lon_deg is not None:
+                self.map_view.set_position(rg.lat_deg, rg.lon_deg, self.pfd._heading)
+
     def closeEvent(self, event):
         # Persist user settings
         config.save({
@@ -450,6 +518,10 @@ class MainWindow(QMainWindow):
             "vsi_source": self.pfd._vsi_source,
             "vario_enabled": self.vario.enabled,
             "vario_volume": self.vario.volume,
+            "map_provider": self.map_view.provider_name,
+            "map_overlay": self.map_view._overlay_enabled,
+            "map_heading_up": self.map_view.heading_up,
+            "openaip_api_key": self.map_view._api_keys.get("OpenAIP", ""),
         })
         self.vario.enabled = False
         self.sensor.stop()
@@ -497,6 +569,11 @@ def main():
     window.vario.enabled = cfg["vario_enabled"]
     window.vario.volume = cfg["vario_volume"]
     window.bottom_bar.set_indicator(2, cfg["vario_enabled"])
+    window.map_view.provider_name = cfg["map_provider"]
+    window.map_view._overlay_enabled = cfg["map_overlay"]
+    window.map_view.heading_up = cfg["map_heading_up"]
+    if cfg["openaip_api_key"]:
+        window.map_view.set_api_key("OpenAIP", cfg["openaip_api_key"])
     window._update_units_label()
 
     if args.windowed:

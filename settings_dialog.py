@@ -11,11 +11,13 @@ from PyQt6.QtWidgets import (
     QDoubleSpinBox, QCheckBox, QTabWidget, QWidget, QSlider,
     QLineEdit, QMessageBox, QScrollArea,
 )
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QUrl
 from PyQt6.QtGui import QFont
+from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 
 from sensors import MID, Baudrates
 import pfd_widget
+from map_widget import PROVIDERS as MAP_PROVIDERS
 
 DIALOG_STYLE = """
 QDialog { background-color: #0e1017; color: #ddd; }
@@ -67,12 +69,13 @@ def _section_label(text):
 
 class SettingsDialog(QDialog):
 
-    def __init__(self, sensor, pfd, vario=None, parent=None):
+    def __init__(self, sensor, pfd, vario=None, map_view=None, parent=None):
         super().__init__(parent)
         self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
         self.sensor = sensor
         self.pfd = pfd
         self.vario = vario
+        self.map_view = map_view
         self.info = sensor.device_info
         self.setMinimumSize(620, 520)
         self.setStyleSheet(DIALOG_STYLE)
@@ -86,6 +89,8 @@ class SettingsDialog(QDialog):
         tabs.addTab(self._build_filter_tab(), "Filter")
         tabs.addTab(self._build_gps_tab(), "GPS / Mag")
         tabs.addTab(self._build_display_tab(), "Display")
+        if self.map_view is not None:
+            tabs.addTab(self._build_map_tab(), "Map")
         tabs.addTab(self._build_commands_tab(), "Commands")
         layout.addWidget(tabs)
 
@@ -711,6 +716,179 @@ class SettingsDialog(QDialog):
             self._p0_spin.setValue(data.pressure_pa / 100.0)
         else:
             self._set_status("No pressure reading available")
+
+    # ─── Map tab ───
+    def _build_map_tab(self):
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("QScrollArea { border: none; }")
+        w = QWidget()
+        layout = QVBoxLayout(w)
+
+        # Base layer
+        layer_grp = QGroupBox("Map Layers")
+        layer_layout = QVBoxLayout(layer_grp)
+
+        base_row = QHBoxLayout()
+        base_row.addWidget(QLabel("Base layer:"))
+        self._map_combo = QComboBox()
+        for name in MAP_PROVIDERS:
+            self._map_combo.addItem(name, name)
+            if name == self.map_view.provider_name:
+                self._map_combo.setCurrentIndex(self._map_combo.count() - 1)
+        self._map_combo.currentIndexChanged.connect(self._on_map_provider_changed)
+        base_row.addWidget(self._map_combo)
+        layer_layout.addLayout(base_row)
+
+        # Overlay
+        self._openaip_overlay_cb = QCheckBox("OpenAIP overlay (airspaces, airports, navaids)")
+        self._openaip_overlay_cb.setChecked(self.map_view._overlay_enabled)
+        self._openaip_overlay_cb.toggled.connect(
+            lambda v: setattr(self.map_view, '_overlay_enabled', v))
+        layer_layout.addWidget(self._openaip_overlay_cb)
+        layout.addWidget(layer_grp)
+
+        # OpenAIP API Key
+        key_grp = QGroupBox("OpenAIP API Key")
+        key_layout = QVBoxLayout(key_grp)
+        self._openaip_key = QLineEdit()
+        self._openaip_key.setPlaceholderText("Enter API key from openaip.net")
+        self._openaip_key.setText(self.map_view._api_keys.get("OpenAIP", ""))
+        self._openaip_key.textChanged.connect(
+            lambda t: self.map_view.set_api_key("OpenAIP", t))
+        key_layout.addWidget(self._openaip_key)
+        key_hint = QLabel("Get a free API key at openaip.net to enable aviation data.")
+        key_hint.setWordWrap(True)
+        key_hint.setStyleSheet("color: #666; font-size: 10px;")
+        key_layout.addWidget(key_hint)
+        layout.addWidget(key_grp)
+
+        # Connection test
+        test_grp = QGroupBox("Connection Status")
+        test_layout = QVBoxLayout(test_grp)
+        test_row = QHBoxLayout()
+        test_btn = QPushButton("Test Connection")
+        test_btn.clicked.connect(self._test_map_connection)
+        test_row.addWidget(test_btn)
+        self._map_status = QLabel("")
+        self._map_status.setWordWrap(True)
+        test_row.addWidget(self._map_status, 1)
+        test_layout.addLayout(test_row)
+        self._map_nam = QNetworkAccessManager(self)
+        self._map_nam.finished.connect(self._on_map_test_reply)
+        layout.addWidget(test_grp)
+
+        # Cache
+        cache_grp = QGroupBox("Tile Cache")
+        cache_layout = QVBoxLayout(cache_grp)
+        self._cache_info = QLabel("")
+        self._cache_info.setStyleSheet("color: #aaa; font-size: 11px;")
+        self._update_cache_info()
+        cache_layout.addWidget(self._cache_info)
+        clear_btn = QPushButton("Clear Map Cache")
+        clear_btn.setObjectName("danger")
+        clear_btn.clicked.connect(self._clear_map_cache)
+        cache_layout.addWidget(clear_btn)
+        layout.addWidget(cache_grp)
+
+        layout.addStretch()
+        scroll.setWidget(w)
+        return scroll
+
+    def _update_cache_info(self):
+        if not hasattr(self, '_cache_info'):
+            return
+        from map_widget import CACHE_DIR
+        import os, shutil
+        count = 0
+        size = 0
+        if os.path.isdir(CACHE_DIR):
+            for f in os.listdir(CACHE_DIR):
+                fp = os.path.join(CACHE_DIR, f)
+                if os.path.isfile(fp):
+                    count += 1
+                    size += os.path.getsize(fp)
+        if size > 1024 * 1024:
+            size_str = f"{size / 1024 / 1024:.1f} MB"
+        else:
+            size_str = f"{size / 1024:.0f} KB"
+        try:
+            disk = shutil.disk_usage(CACHE_DIR)
+            free_gb = disk.free / (1024 ** 3)
+            total_gb = disk.total / (1024 ** 3)
+            disk_str = f"  |  Disk: {free_gb:.1f} GB free / {total_gb:.1f} GB total"
+        except OSError:
+            disk_str = ""
+        self._cache_info.setText(f"{count} tiles, {size_str}{disk_str}")
+
+    def _clear_map_cache(self):
+        from map_widget import CACHE_DIR
+        import os, shutil
+        if os.path.isdir(CACHE_DIR):
+            shutil.rmtree(CACHE_DIR)
+            os.makedirs(CACHE_DIR, exist_ok=True)
+        if self.map_view:
+            self.map_view._tile_cache.clear()
+            self.map_view._pending.clear()
+            self.map_view.update()
+        self._update_cache_info()
+        self._set_status("Map cache cleared")
+
+    def _on_map_provider_changed(self, idx):
+        name = self._map_combo.currentData()
+        if self.map_view and name:
+            self.map_view.provider_name = name
+            self._test_map_connection()
+
+    def _test_map_connection(self):
+        if not hasattr(self, '_map_status'):
+            return
+        name = self._map_combo.currentData()
+        if not name:
+            return
+        provider = MAP_PROVIDERS.get(name)
+        if not provider:
+            return
+
+        self._map_status.setText("Testing...")
+        self._map_status.setStyleSheet("color: #FFCC00; font-size: 11px;")
+
+        # Build a test tile URL (zoom 1, tile 0,0 — small, always exists)
+        url_template = provider["url"]
+        subdomains = provider.get("subdomains", ["a"])
+        url = url_template.replace("{s}", subdomains[0]).replace("{z}", "1").replace("{x}", "0").replace("{y}", "0")
+
+        if provider.get("api_key"):
+            api_key = self.map_view._api_keys.get(name, "") if self.map_view else ""
+            url = url.replace("{key}", api_key)
+            if not api_key:
+                self._map_status.setText("No API key configured")
+                self._map_status.setStyleSheet("color: #FF8800; font-size: 11px;")
+                return
+
+        request = QNetworkRequest(QUrl(url))
+        request.setRawHeader(b"User-Agent", b"XsensMTiG-PFD/1.0")
+        request.setAttribute(QNetworkRequest.Attribute.User, name)
+        self._map_nam.get(request)
+
+    def _on_map_test_reply(self, reply: QNetworkReply):
+        if not hasattr(self, '_map_status'):
+            reply.deleteLater()
+            return
+        provider = reply.request().attribute(QNetworkRequest.Attribute.User)
+        status = reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute)
+        err = reply.error()
+
+        if err == QNetworkReply.NetworkError.NoError and status == 200:
+            self._map_status.setText(f"{provider}: OK (HTTP {status})")
+            self._map_status.setStyleSheet("color: #00CC00; font-size: 11px;")
+        elif status:
+            self._map_status.setText(f"{provider}: HTTP {status}")
+            self._map_status.setStyleSheet("color: #FF3333; font-size: 11px;")
+        else:
+            self._map_status.setText(f"{provider}: {reply.errorString()}")
+            self._map_status.setStyleSheet("color: #FF3333; font-size: 11px;")
+        reply.deleteLater()
 
     def _on_vario_toggled(self, checked):
         if self.vario:

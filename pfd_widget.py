@@ -898,13 +898,24 @@ class PFDWidget(QWidget):
 
         # GS readout box at the bottom of the speed tape
         p.setClipping(False)
-        gs_font_sz = max(6, int(gs_strip_h * 0.5))
+
+        # Dynamically scale font to fit "GS 000 KM/H" within the box width
+        avail_w = gs_r.width() - 6  # padding
+        test_text = f"GS 000 {gs_unit}"
+        gs_font_sz = max(5, int(gs_strip_h * 0.55))
+        while gs_font_sz > 5:
+            test_font = QFont("Monospace", gs_font_sz)
+            test_font.setBold(True)
+            if QFontMetrics(test_font).horizontalAdvance(test_text) <= avail_w:
+                break
+            gs_font_sz -= 1
+
         gs_font = QFont("Monospace", gs_font_sz)
         gs_font.setBold(True)
-        p.setFont(gs_font)
         gs_fm = QFontMetrics(gs_font)
 
-        unit_font = QFont("Monospace", max(5, int(gs_strip_h * 0.35)))
+        unit_font_sz = max(4, int(gs_font_sz * 0.7))
+        unit_font = QFont("Monospace", unit_font_sz)
         unit_fm = QFontMetrics(unit_font)
 
         p.setPen(QPen(QColor(160, 160, 160), 1))
@@ -913,35 +924,27 @@ class PFDWidget(QWidget):
 
         baseline_y = gs_r.top() + gs_fm.ascent() + (gs_strip_h - gs_fm.height()) // 2
         pad = 3
-        right_edge = gs_r.right() - pad
+        x = gs_r.left() + pad
 
-        # Layout right-to-left: unit, then value, then "GS" label
-        unit_w = unit_fm.horizontalAdvance(gs_unit)
-        unit_x = right_edge - unit_w
-
-        char_w = gs_fm.horizontalAdvance("0")
-        val_w = char_w * 3
-        val_x = unit_x - val_w - 2
-
-        gs_x = gs_r.left() + pad
-
-        # Draw "GS" label
+        # "GS" label
         p.setPen(QPen(FG))
         p.setFont(gs_font)
-        p.drawText(gs_x, baseline_y, "GS")
+        p.drawText(x, baseline_y, "GS")
+        x += gs_fm.horizontalAdvance("GS") + gs_fm.horizontalAdvance(" ")
 
-        # Draw fixed-width numeric value
+        # Fixed-width numeric value
+        char_w = gs_fm.horizontalAdvance("0")
         spd_str = f"{int(round(speed_disp)):3d}"
-        x = val_x
         for ch in spd_str:
             if ch != ' ':
                 p.drawText(x, baseline_y, ch)
             x += char_w
 
-        # Draw unit (right-aligned to box edge)
+        # Unit with a small gap
+        x += max(2, char_w // 4)
         p.setFont(unit_font)
         p.setPen(QPen(FG_DIM))
-        p.drawText(unit_x, baseline_y, gs_unit)
+        p.drawText(x, baseline_y, gs_unit)
         p.restore()
 
     # ─────────── Altitude tape ───────────

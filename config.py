@@ -21,6 +21,10 @@ _DEFAULTS = {
     "vsi_source": "gnss",  # "gnss" or "baro"
     "vario_enabled": False,
     "vario_volume": 0.7,
+    "map_provider": "OpenStreetMap",
+    "map_overlay": False,
+    "map_heading_up": False,
+    "openaip_api_key": "",
 }
 
 
