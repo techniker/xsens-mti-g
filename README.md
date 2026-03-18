@@ -17,20 +17,34 @@ Full-featured PFD (Primary Flight Display) driven by an Xsens MTi-G IMU/GPS over
 
 ## Features
 
+### PFD Instruments
 - **Attitude indicator** — selectable source: raw accelerometer (drift-free) or EKF (fused IMU/GPS). Pitch ladder with 2.5° fine marks
 - **Bank arc** — slip/skid indicator, auto-calibrated during AHRS alignment
-- **Speed tape** — GPS ground speed (labeled GS) with rolling drum digits, LP filtering, noise squelch, V-speed color bands (white/green/yellow arcs, red Vne line, barber-pole overspeed)
-- **Altitude tape** — barometric altitude (QNH in hPa) with rolling drum digits, GPS altitude fallback
+- **Speed tape** — GPS ground speed with GS readout box, rolling drum digits, LP filtering, noise squelch, V-speed color bands (white/green/yellow arcs, red Vne line, barber-pole overspeed)
+- **Altitude tape** — selectable source: barometric (QNH corrected) or GNSS. Rolling drum digits, tape label indicates source
 - **Compass rose** — rotating 360° HSI with upright labels, aircraft symbol, heading bug with notch marker
-- **Vertical speed indicator** — non-linear scale with value readout above 100 fpm
+- **Vertical speed indicator** — selectable source: GNSS (GPS vertical velocity) or barometric (pressure-derived with two-stage LP filter). Non-linear scale with value readout
 - **Flight path vector** (FPV / velocity vector)
 - **Heading bug** — adjustable with +/- keys, cyan display with HDG readout
+- **GNSS status** — fix status overlay (3D FIX / 2D FIX / SEARCHING / NO FIX) with color coding
 - **Fail flags** — red X overlay when data is unavailable (ATT, SPD, ALT, V/S, HDG)
 - **AHRS alignment** — startup initialization with progress bar, auto-zero attitude and slip/skid
-- **Data panels** — raw sensor readouts (accelerometer, gyroscope, magnetometer, GPS, pressure, satellite C/N0 bar graph, G-force), toggle with D key
-- **Settings dialog** — full device configuration: attitude source, QNH (with set-from-sensor), units, V-speed bands, auto-zero, filter scenario, gravity magnitude, processing flags, sensor/object alignment, GPS lever arm, magnetic declination, in-run compass calibration, UTC time, transmit delay, sync-out, baudrate, sample rate, error mode, location ID, SetNoRotation
+
+### Variometer Audio
+- **Glider-style vario sound** — beeping tone in climb (500–1500 Hz, 1.7–6.7 beeps/sec), continuous low tone in sink (200–500 Hz), configurable dead band
+- Adjustable volume, enable/disable via softkey bar or settings dialog
+
+### Softkey Bar
+- **Softkey bar** — 12 fixed button positions at the bottom of the PFD
+- Touch-friendly buttons: UNIT, QNH, VARIO (with activity indicator), AHRS, MENU
+- Frameless popup dialogs for QNH adjustment and AHRS functions
+- Buttons can be dynamically reconfigured for context-sensitive menus
+
+### Data & Configuration
+- **Data panels** — raw sensor readouts (accelerometer, gyroscope, magnetometer, GPS, pressure, satellite C/N0 bar graph, G-force), quick-access buttons, toggle with D key
+- **Settings dialog** — full device configuration: attitude/altitude/VSI source, QNH, units, V-speed bands, vario audio, auto-zero, filter scenario, gravity magnitude, processing flags, sensor/object alignment, GPS lever arm, magnetic declination, in-run compass calibration, UTC time, transmit delay, sync-out, baudrate, sample rate, error mode, location ID, SetNoRotation
 - **Persistent settings** — all user preferences saved to `config.json` and restored on next launch
-- **Unit toggle** — knots/feet/fpm or km/h/meters/m/s (V-speed bands convert dynamically)
+- **Unit toggle** — metric (km/h, meters, m/s) or imperial (knots, feet, ft/min), V-speed bands convert dynamically
 
 Communicates using the Xsens Mark III legacy protocol (MTData `0x32`).
 
@@ -80,9 +94,10 @@ QNH pressure, units, V-speeds, heading bug, and other settings are persisted in 
 
 | File                | Purpose                                              |
 |---------------------|------------------------------------------------------|
-| `main.py`           | Application entry point, main window, keybindings    |
+| `main.py`           | Application entry point, softkey bar, popup dialogs  |
 | `sensors.py`        | Xsens MTi-G protocol, serial I/O, data parsing      |
-| `pfd_widget.py`     | PFD rendering (attitude, tapes, HSI)                 |
+| `pfd_widget.py`     | PFD rendering (attitude, tapes, HSI, GNSS status)    |
+| `vario_audio.py`    | Variometer audio synthesiser (glider-style beeping)  |
 | `data_panels.py`    | Debug data panel strip (sensors, GNSS, satellites)   |
 | `settings_dialog.py`| Device and display configuration UI                  |
 | `config.py`         | JSON settings persistence                            |
