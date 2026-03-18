@@ -117,11 +117,15 @@ class PFDWidget(QWidget):
         self._alt_source = "baro"  # "baro" or "gnss"
         self._vsi_source = "gnss"  # "gnss" or "baro"
 
-        # Baro VSI: differentiate barometric altitude over time
-        self._prev_baro_alt = None
+        # Baro VSI: differentiate LP-filtered barometric altitude.
+        # Pre-filter altitude to suppress pressure sensor noise before
+        # differentiation (which amplifies noise).
+        self._baro_alt_filtered = None  # LP-filtered baro altitude
+        self._baro_alt_lp_alpha = 0.92  # altitude pre-filter (suppress noise)
+        self._prev_baro_alt_f = None    # previous filtered altitude for derivative
         self._prev_baro_time = None
         self._baro_vsi = 0.0
-        self._baro_vsi_alpha = 0.85  # smoothing for baro-derived VSI
+        self._baro_vsi_alpha = 0.97  # heavy post-filter on VSI (~1s time constant at 30 Hz)
 
     def set_data(self, data: SensorData):
         """Update attitude from accelerometer (drift-free), heading from EKF."""
@@ -185,19 +189,28 @@ class PFDWidget(QWidget):
                 self._valid_alt = True
                 self._altitude = data.pos_alt
 
-        # Baro-derived VSI: differentiate barometric altitude over time
+        # Baro-derived VSI: two-stage filter then differentiate.
+        # Stage 1: LP filter raw baro altitude to suppress sensor noise.
+        # Stage 2: differentiate filtered altitude, then LP the result.
         if data.baro_alt_m is not None:
             now = time.monotonic()
-            if self._prev_baro_alt is not None and self._prev_baro_time is not None:
+            # Pre-filter altitude
+            if self._baro_alt_filtered is None:
+                self._baro_alt_filtered = data.baro_alt_m
+            else:
+                a1 = self._baro_alt_lp_alpha
+                self._baro_alt_filtered = a1 * self._baro_alt_filtered + (1.0 - a1) * data.baro_alt_m
+            # Differentiate filtered altitude
+            if self._prev_baro_alt_f is not None and self._prev_baro_time is not None:
                 dt = now - self._prev_baro_time
-                if dt > 0.001:  # guard against zero dt
-                    raw_baro_vsi = (data.baro_alt_m - self._prev_baro_alt) / dt
-                    a = self._baro_vsi_alpha
-                    self._baro_vsi = a * self._baro_vsi + (1.0 - a) * raw_baro_vsi
+                if dt > 0.001:
+                    raw_baro_vsi = (self._baro_alt_filtered - self._prev_baro_alt_f) / dt
+                    a2 = self._baro_vsi_alpha
+                    self._baro_vsi = a2 * self._baro_vsi + (1.0 - a2) * raw_baro_vsi
                     if self._vsi_source == "baro":
                         self._valid_vsi = True
                         self._vsi = self._baro_vsi
-            self._prev_baro_alt = data.baro_alt_m
+            self._prev_baro_alt_f = self._baro_alt_filtered
             self._prev_baro_time = now
 
         # AHRS alignment: count valid attitude samples
