@@ -295,7 +295,8 @@ class MainWindow(QMainWindow):
         # Softkey assignments (G1000-style: 12 fixed positions)
         #  0: UNITS   1: QNH   2: VARIO   3: AHRS
         #  4-10: (reserved)   11: MENU
-        self.bottom_bar.configure(0, "UNITS", self.pfd.toggle_units)
+        self.bottom_bar.configure(0, "US", self._toggle_units)
+        self._update_units_label()
         self.bottom_bar.configure(1, "QNH", self._show_qnh)
         self.bottom_bar.configure(2, "VARIO", self._toggle_vario)
         self.bottom_bar.configure(3, "AHRS", self._show_ahrs)
@@ -323,7 +324,7 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence(Qt.Key.Key_Escape), self, self.close)
         QShortcut(QKeySequence(Qt.Key.Key_F), self, self._toggle_fullscreen)
         QShortcut(QKeySequence(Qt.Key.Key_C), self, self._calibrate)
-        QShortcut(QKeySequence(Qt.Key.Key_U), self, lambda: self.pfd.toggle_units())
+        QShortcut(QKeySequence(Qt.Key.Key_U), self, self._toggle_units)
         QShortcut(QKeySequence(Qt.Key.Key_D), self, self._toggle_debug)
         QShortcut(QKeySequence(Qt.Key.Key_M), self, self._show_settings)
         QShortcut(QKeySequence(Qt.Key.Key_Z), self, self.pfd.zero_attitude)
@@ -352,6 +353,14 @@ class MainWindow(QMainWindow):
     def _show_ahrs(self):
         dlg = AHRSPopup(self.pfd, self._calibrate, self)
         dlg.exec()
+
+    def _toggle_units(self):
+        self.pfd.toggle_units()
+        self._update_units_label()
+
+    def _update_units_label(self):
+        unit = "METRIC" if self.pfd._metric else "IMPERIAL"
+        self.bottom_bar.button(0).setText(f"UNIT [{unit}]")
 
     def _toggle_vario(self):
         self.vario.enabled = not self.vario.enabled
@@ -483,6 +492,7 @@ def main():
     window.vario.enabled = cfg["vario_enabled"]
     window.vario.volume = cfg["vario_volume"]
     window.bottom_bar.set_indicator(2, cfg["vario_enabled"])
+    window._update_units_label()
 
     if args.windowed:
         window.resize(1600, 900)
