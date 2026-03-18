@@ -28,9 +28,9 @@ import threading
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
-    QLabel, QStatusBar,
+    QLabel, QStatusBar, QPushButton, QDialog, QDoubleSpinBox, QGridLayout,
 )
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QKeySequence, QShortcut
 
 from sensors import XSensSensor, SensorData, DeviceInfo
@@ -40,6 +40,214 @@ from data_panels import DataPanelWidget
 from settings_dialog import SettingsDialog
 import config
 from vario_audio import VarioAudio
+
+
+BAR_STYLE = """
+QWidget#pfd_bar { background-color: #1a1d25; border-top: 1px solid #333; }
+"""
+
+BAR_BTN_STYLE = """
+QPushButton {
+    background-color: #252830; border: 1px solid #444; border-radius: 3px;
+    padding: 4px 2px; color: #ddd; font-size: 11px; font-family: monospace;
+    min-height: 28px;
+}
+QPushButton:hover { background-color: #2d3040; }
+QPushButton:pressed { background-color: #4CA3DD; color: black; }
+QPushButton:disabled { background-color: #1a1d25; border-color: #333; color: #333; }
+"""
+
+POPUP_STYLE = """
+QDialog { background-color: #0e1017; border: 2px solid #4CA3DD; }
+QLabel { color: #aaa; font-size: 12px; }
+QPushButton {
+    background-color: #1a1d25; border: 1px solid #444; border-radius: 4px;
+    padding: 10px 16px; color: #ddd; font-size: 13px; min-height: 32px;
+}
+QPushButton:hover { border-color: #4CA3DD; }
+QPushButton:pressed { background-color: #4CA3DD; color: black; }
+QPushButton#danger { border-color: #c00; color: #f88; }
+QPushButton#danger:hover { background-color: #400; }
+QPushButton#close_btn { background-color: #252830; border-color: #666; font-weight: bold; }
+QDoubleSpinBox {
+    background-color: #1a1d25; border: 1px solid #444; border-radius: 4px;
+    padding: 8px; color: #ddd; font-size: 16px; font-family: monospace;
+}
+"""
+
+NUM_SOFTKEYS = 12  # G1000 has 12 softkeys
+
+
+class BarButton(QPushButton):
+    """A single softkey in the bottom menu bar.
+    Supports an optional activity indicator (small colored bar)."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setStyleSheet(BAR_BTN_STYLE)
+        self._indicator = False
+        self._indicator_color = "#00CC00"
+        self._label = ""
+        self.setEnabled(False)
+
+    def configure(self, label: str, callback=None, indicator=False):
+        self._label = label
+        self._indicator = indicator
+        self.setText(label)
+        self.setEnabled(label != "")
+        try:
+            self.clicked.disconnect()
+        except TypeError:
+            pass
+        if callback:
+            self.clicked.connect(callback)
+
+    def set_indicator(self, active: bool, color: str = "#00CC00"):
+        self._indicator = active
+        self._indicator_color = color
+        self.update()
+
+    def clear(self):
+        self._label = ""
+        self._indicator = False
+        self.setText("")
+        self.setEnabled(False)
+        try:
+            self.clicked.disconnect()
+        except TypeError:
+            pass
+
+    def paintEvent(self, event):
+        super().paintEvent(event)
+        if self._indicator:
+            from PyQt6.QtGui import QPainter, QColor
+            p = QPainter(self)
+            p.setRenderHint(QPainter.RenderHint.Antialiasing)
+            p.setPen(Qt.PenStyle.NoPen)
+            p.setBrush(QColor(self._indicator_color))
+            bar_h = 3
+            bar_w = int(self.width() * 0.6)
+            x = (self.width() - bar_w) // 2
+            y = self.height() - bar_h - 2
+            p.drawRoundedRect(x, y, bar_w, bar_h, 1, 1)
+            p.end()
+
+
+class _PopupBase(QDialog):
+    """Frameless popup base with a close button at the bottom."""
+
+    def __init__(self, title_text: str, parent=None):
+        super().__init__(parent)
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
+        self.setStyleSheet(POPUP_STYLE)
+        self._outer = QVBoxLayout(self)
+        self._outer.setContentsMargins(10, 10, 10, 10)
+
+        title = QLabel(title_text)
+        title.setStyleSheet("color: #4CA3DD; font-weight: bold; font-size: 14px;")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._outer.addWidget(title)
+
+        self.content = QVBoxLayout()
+        self._outer.addLayout(self.content)
+
+        self._outer.addStretch()
+        close_btn = QPushButton("Close")
+        close_btn.setObjectName("close_btn")
+        close_btn.clicked.connect(self.accept)
+        self._outer.addWidget(close_btn)
+
+
+class QNHPopup(_PopupBase):
+    def __init__(self, sensor, parent=None):
+        super().__init__("QNH", parent)
+        self.sensor = sensor
+        self.setFixedSize(300, 240)
+
+        self._spin = QDoubleSpinBox()
+        self._spin.setRange(900.0, 1100.0)
+        self._spin.setDecimals(2)
+        self._spin.setSingleStep(1.0)
+        self._spin.setSuffix(" hPa")
+        self._spin.setValue(sensor.p0_pa / 100.0)
+        self._spin.valueChanged.connect(lambda v: setattr(sensor, 'p0_pa', v * 100.0))
+        self.content.addWidget(self._spin)
+
+        btn_row = QHBoxLayout()
+        for delta in [-1, -0.5, +0.5, +1]:
+            sign = "+" if delta > 0 else ""
+            btn = QPushButton(f"{sign}{delta}")
+            btn.clicked.connect(lambda _, d=delta: self._spin.setValue(self._spin.value() + d))
+            btn_row.addWidget(btn)
+        self.content.addLayout(btn_row)
+
+        btn_row2 = QHBoxLayout()
+        std_btn = QPushButton("STD 1013.25")
+        std_btn.clicked.connect(lambda: self._spin.setValue(1013.25))
+        btn_row2.addWidget(std_btn)
+        sensor_btn = QPushButton("From Sensor")
+        sensor_btn.clicked.connect(self._from_sensor)
+        btn_row2.addWidget(sensor_btn)
+        self.content.addLayout(btn_row2)
+
+    def _from_sensor(self):
+        data = self.sensor.get_latest()
+        if data and data.pressure_pa and data.pressure_pa > 0:
+            self._spin.setValue(data.pressure_pa / 100.0)
+
+
+class AHRSPopup(_PopupBase):
+    def __init__(self, pfd, calibrate_fn, parent=None):
+        super().__init__("AHRS", parent)
+        self.setFixedSize(280, 240)
+
+        level_btn = QPushButton("Level AHRS  [Z]")
+        level_btn.clicked.connect(lambda: (pfd.zero_attitude(), self.accept()))
+        self.content.addWidget(level_btn)
+
+        reset_btn = QPushButton("Reset Level  [R]")
+        reset_btn.clicked.connect(lambda: (pfd.reset_zero(), self.accept()))
+        self.content.addWidget(reset_btn)
+
+        cal_btn = QPushButton("Calibrate  [C]")
+        cal_btn.setObjectName("danger")
+        cal_btn.clicked.connect(lambda: (calibrate_fn(), self.accept()))
+        self.content.addWidget(cal_btn)
+
+
+class PFDBottomBar(QWidget):
+    """G1000-style softkey bar with fixed 12-button layout.
+    Buttons are addressed by index (0-11). Unassigned buttons
+    are disabled and empty. Each button supports an activity indicator."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("pfd_bar")
+        self.setStyleSheet(BAR_STYLE)
+        self.setFixedHeight(42)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(2, 2, 2, 2)
+        layout.setSpacing(2)
+
+        self._buttons: list[BarButton] = []
+        for i in range(NUM_SOFTKEYS):
+            btn = BarButton(self)
+            layout.addWidget(btn)
+            self._buttons.append(btn)
+
+    def button(self, index: int) -> BarButton:
+        return self._buttons[index]
+
+    def configure(self, index: int, label: str, callback=None, indicator=False):
+        self._buttons[index].configure(label, callback, indicator)
+
+    def clear_all(self):
+        for btn in self._buttons:
+            btn.clear()
+
+    def set_indicator(self, index: int, active: bool, color: str = "#00CC00"):
+        self._buttons[index].set_indicator(active, color)
 
 
 class MainWindow(QMainWindow):
@@ -62,6 +270,10 @@ class MainWindow(QMainWindow):
         self.pfd.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         layout.addWidget(self.pfd, 6)
 
+        # Bottom bar (always visible)
+        self.bottom_bar = PFDBottomBar()
+        layout.addWidget(self.bottom_bar, 0)
+
         # Data panels (bottom strip — hidden by default)
         self.data_panel = DataPanelWidget()
         layout.addWidget(self.data_panel, 3)
@@ -80,6 +292,16 @@ class MainWindow(QMainWindow):
         bp.toggle_fullscreen.connect(self._toggle_fullscreen)
         bp.quit_app.connect(self.close)
 
+        # Softkey assignments (G1000-style: 12 fixed positions)
+        #  0: UNITS   1: QNH   2: VARIO   3: AHRS
+        #  4-10: (reserved)   11: MENU
+        self.bottom_bar.configure(0, "UNITS", self.pfd.toggle_units)
+        self.bottom_bar.configure(1, "QNH", self._show_qnh)
+        self.bottom_bar.configure(2, "VARIO", self._toggle_vario)
+        self.bottom_bar.configure(3, "AHRS", self._show_ahrs)
+        # 4-10 reserved for future use (empty/disabled)
+        self.bottom_bar.configure(11, "MENU", self._show_settings)
+
         # Status bar (hidden by default)
         self.status_bar = QStatusBar()
         self.status_bar.setStyleSheet(
@@ -96,7 +318,7 @@ class MainWindow(QMainWindow):
         # Variometer audio
         self.vario = VarioAudio()
 
-        # Keyboard shortcuts
+        # Keyboard shortcuts (window-level so they work regardless of focus)
         QShortcut(QKeySequence(Qt.Key.Key_Q), self, self.close)
         QShortcut(QKeySequence(Qt.Key.Key_Escape), self, self.close)
         QShortcut(QKeySequence(Qt.Key.Key_F), self, self._toggle_fullscreen)
@@ -104,6 +326,12 @@ class MainWindow(QMainWindow):
         QShortcut(QKeySequence(Qt.Key.Key_U), self, lambda: self.pfd.toggle_units())
         QShortcut(QKeySequence(Qt.Key.Key_D), self, self._toggle_debug)
         QShortcut(QKeySequence(Qt.Key.Key_M), self, self._show_settings)
+        QShortcut(QKeySequence(Qt.Key.Key_Z), self, self.pfd.zero_attitude)
+        QShortcut(QKeySequence(Qt.Key.Key_R), self, self.pfd.reset_zero)
+        QShortcut(QKeySequence(Qt.Key.Key_H), self, lambda: self.pfd.set_hdg_bug(self.pfd._heading))
+        QShortcut(QKeySequence(Qt.Key.Key_Plus), self, lambda: self.pfd.set_hdg_bug((self.pfd._hdg_bug + 1) % 360))
+        QShortcut(QKeySequence(Qt.Key.Key_Equal), self, lambda: self.pfd.set_hdg_bug((self.pfd._hdg_bug + 1) % 360))
+        QShortcut(QKeySequence(Qt.Key.Key_Minus), self, lambda: self.pfd.set_hdg_bug((self.pfd._hdg_bug - 1) % 360))
 
         # Calibration result flag (polled from GUI thread)
         self._cal_result = None
@@ -116,6 +344,18 @@ class MainWindow(QMainWindow):
     def _show_settings(self):
         dlg = SettingsDialog(self.sensor, self.pfd, self.vario, self)
         dlg.exec()
+
+    def _show_qnh(self):
+        dlg = QNHPopup(self.sensor, self)
+        dlg.exec()
+
+    def _show_ahrs(self):
+        dlg = AHRSPopup(self.pfd, self._calibrate, self)
+        dlg.exec()
+
+    def _toggle_vario(self):
+        self.vario.enabled = not self.vario.enabled
+        self.bottom_bar.set_indicator(2, self.vario.enabled)
 
     def _toggle_debug(self):
         self._debug_mode = not self._debug_mode
@@ -242,6 +482,7 @@ def main():
     window.pfd._vsi_source = cfg["vsi_source"]
     window.vario.enabled = cfg["vario_enabled"]
     window.vario.volume = cfg["vario_volume"]
+    window.bottom_bar.set_indicator(2, cfg["vario_enabled"])
 
     if args.windowed:
         window.resize(1600, 900)
