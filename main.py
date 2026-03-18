@@ -343,8 +343,13 @@ class MainWindow(QMainWindow):
         self._timer.start(33)
 
     def _show_settings(self):
-        dlg = SettingsDialog(self.sensor, self.pfd, self.vario, self)
-        dlg.exec()
+        if hasattr(self, '_settings_dlg') and self._settings_dlg is not None and self._settings_dlg.isVisible():
+            self._settings_dlg.accept()
+            self._settings_dlg = None
+            return
+        self._settings_dlg = SettingsDialog(self.sensor, self.pfd, self.vario, self)
+        self._settings_dlg.finished.connect(lambda: setattr(self, '_settings_dlg', None))
+        self._settings_dlg.show()
 
     def _show_qnh(self):
         dlg = QNHPopup(self.sensor, self)

@@ -69,11 +69,11 @@ class SettingsDialog(QDialog):
 
     def __init__(self, sensor, pfd, vario=None, parent=None):
         super().__init__(parent)
+        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
         self.sensor = sensor
         self.pfd = pfd
         self.vario = vario
         self.info = sensor.device_info
-        self.setWindowTitle("MTi-G Settings")
         self.setMinimumSize(620, 520)
         self.setStyleSheet(DIALOG_STYLE)
 
