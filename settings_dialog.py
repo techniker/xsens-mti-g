@@ -558,6 +558,18 @@ class SettingsDialog(QDialog):
         baro_layout.addWidget(sensor_btn)
         layout.addWidget(baro_grp)
 
+        # Altitude source
+        alt_grp = QGroupBox("Altitude Source")
+        alt_layout = QHBoxLayout(alt_grp)
+        alt_layout.addWidget(QLabel("Source:"))
+        self._alt_combo = QComboBox()
+        self._alt_combo.addItems(["Barometric (QNH corrected)", "GNSS (GPS altitude)"])
+        self._alt_combo.setCurrentIndex(1 if self.pfd._alt_source == "gnss" else 0)
+        self._alt_combo.currentIndexChanged.connect(
+            lambda idx: setattr(self.pfd, '_alt_source', "gnss" if idx == 1 else "baro"))
+        alt_layout.addWidget(self._alt_combo)
+        layout.addWidget(alt_grp)
+
         # Startup
         startup_grp = QGroupBox("Startup")
         startup_layout = QHBoxLayout(startup_grp)

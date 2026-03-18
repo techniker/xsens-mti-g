@@ -16,6 +16,7 @@ _DEFAULTS = {
     "spd_vne": 163,
     "auto_zero_on_start": True,
     "hdg_bug": 0,
+    "alt_source": "baro",  # "baro" or "gnss"
 }
 
 

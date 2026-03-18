@@ -113,6 +113,7 @@ class PFDWidget(QWidget):
         self._align_target = 90       # ~3 sec at 30 Hz
         self._align_done = False
         self._auto_zero_on_start = True  # zero attitude after alignment
+        self._alt_source = "baro"  # "baro" or "gnss"
 
     def set_data(self, data: SensorData):
         """Update attitude from accelerometer (drift-free), heading from EKF."""
@@ -159,12 +160,20 @@ class PFDWidget(QWidget):
             a = self._spd_lp_alpha
             self._speed = a * self._speed + (1.0 - a) * raw_spd
 
-        if data.baro_alt_m is not None:
-            self._valid_alt = True
-            self._altitude = data.baro_alt_m
-        elif data.pos_alt is not None:
-            self._valid_alt = True
-            self._altitude = data.pos_alt
+        if self._alt_source == "gnss":
+            if data.pos_alt is not None:
+                self._valid_alt = True
+                self._altitude = data.pos_alt
+            elif data.baro_alt_m is not None:
+                self._valid_alt = True
+                self._altitude = data.baro_alt_m
+        else:  # "baro"
+            if data.baro_alt_m is not None:
+                self._valid_alt = True
+                self._altitude = data.baro_alt_m
+            elif data.pos_alt is not None:
+                self._valid_alt = True
+                self._altitude = data.pos_alt
 
         # AHRS alignment: count valid attitude samples
         if not self._align_done and self._valid_att:
@@ -785,12 +794,14 @@ class PFDWidget(QWidget):
             alt_disp = self._altitude            # meters
             major, minor = 50, 10                # tick spacing
             span = 300.0                         # visible range
-            label = "ALT m"
+            src = "GNSS" if self._alt_source == "gnss" else "ALT"
+            label = f"{src} m"
         else:
             alt_disp = self._altitude * 3.28084  # feet
             major, minor = 100, 20
             span = 600.0
-            label = "ALT ft"
+            src = "GNSS" if self._alt_source == "gnss" else "ALT"
+            label = f"{src} ft"
 
         cy = r.center().y()
         tape_w = r.width()

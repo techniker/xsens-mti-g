@@ -173,6 +173,7 @@ class MainWindow(QMainWindow):
             "spd_vne": pfd_widget.SPD_VNE,
             "auto_zero_on_start": self.pfd._auto_zero_on_start,
             "hdg_bug": self.pfd._hdg_bug,
+            "alt_source": self.pfd._alt_source,
         })
         self.sensor.stop()
         super().closeEvent(event)
@@ -213,6 +214,7 @@ def main():
     pfd_widget.SPD_VNO = cfg["spd_vno"]
     pfd_widget.SPD_VNE = cfg["spd_vne"]
     window.pfd._hdg_bug = cfg["hdg_bug"]
+    window.pfd._alt_source = cfg["alt_source"]
 
     if args.windowed:
         window.resize(1600, 900)
