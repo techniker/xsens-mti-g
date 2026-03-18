@@ -121,11 +121,11 @@ class PFDWidget(QWidget):
         # Pre-filter altitude to suppress pressure sensor noise before
         # differentiation (which amplifies noise).
         self._baro_alt_filtered = None  # LP-filtered baro altitude
-        self._baro_alt_lp_alpha = 0.92  # altitude pre-filter (suppress noise)
+        self._baro_alt_lp_alpha = 0.95  # altitude pre-filter (suppress noise)
         self._prev_baro_alt_f = None    # previous filtered altitude for derivative
         self._prev_baro_time = None
         self._baro_vsi = 0.0
-        self._baro_vsi_alpha = 0.97  # heavy post-filter on VSI (~1s time constant at 30 Hz)
+        self._baro_vsi_alpha = 0.985  # heavy post-filter on VSI (~2s time constant at 30 Hz)
 
     def set_data(self, data: SensorData):
         """Update attitude from accelerometer (drift-free), heading from EKF."""
