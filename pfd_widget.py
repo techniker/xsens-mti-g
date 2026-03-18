@@ -150,6 +150,7 @@ class PFDWidget(QWidget):
         # GNSS fix status (derived from available data)
         self._gnss_nsv_used = 0   # SVs used in solution (bGPS field = numSV)
         self._gnss_nsv_visible = 0  # SVs with signal (from GPS status channels)
+        self._compass_offset = 0.0  # manual compass correction degrees
         self._gnss_has_pos = False  # valid position received
         self._gnss_lat = 0.0
         self._gnss_lon = 0.0
@@ -183,8 +184,8 @@ class PFDWidget(QWidget):
         # Heading: EKF only (accelerometer can't provide heading)
         if data.yaw_deg is not None:
             self._valid_hdg = True
-            self._heading = data.yaw_deg % 360.0
-            self._yaw_raw = data.yaw_deg
+            self._heading = (-data.yaw_deg + self._compass_offset) % 360.0
+            self._yaw_raw = -data.yaw_deg + self._compass_offset
 
         if data.vel:
             self._valid_spd = True
@@ -1441,6 +1442,7 @@ class PFDWidget(QWidget):
 
         # ── Heading bug (cyan rectangle with outward notch, inside rim) ──
         bug_ang = self._hdg_bug - hdg
+
         bw = radius * 0.04   # half-width
         bh = radius * 0.08   # height (inward from rim)
         notch = bh * 0.45    # depth of the outward notch

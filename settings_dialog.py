@@ -479,6 +479,32 @@ class SettingsDialog(QDialog):
         mag_layout.addWidget(apply_decl)
         layout.addWidget(mag_grp)
 
+        # Compass Course Correction
+        ccc_grp = QGroupBox("Compass Course Correction")
+        ccc_layout = QVBoxLayout(ccc_grp)
+        ccc_hint = QLabel(
+            "Manual heading offset to correct for residual compass error after "
+            "calibration. Applied on top of magnetic declination."
+        )
+        ccc_hint.setWordWrap(True)
+        ccc_hint.setStyleSheet("color: #666; font-size: 10px;")
+        ccc_layout.addWidget(ccc_hint)
+        ccc_row = QHBoxLayout()
+        ccc_row.addWidget(QLabel("Offset [deg]:"))
+        self._compass_offset_spin = QDoubleSpinBox()
+        self._compass_offset_spin.setRange(-180.0, 180.0)
+        self._compass_offset_spin.setDecimals(1)
+        self._compass_offset_spin.setSingleStep(0.5)
+        self._compass_offset_spin.setValue(self.pfd._compass_offset)
+        self._compass_offset_spin.valueChanged.connect(
+            lambda v: setattr(self.pfd, '_compass_offset', v))
+        ccc_row.addWidget(self._compass_offset_spin)
+        zero_btn = QPushButton("Zero")
+        zero_btn.clicked.connect(lambda: self._compass_offset_spin.setValue(0.0))
+        ccc_row.addWidget(zero_btn)
+        ccc_layout.addLayout(ccc_row)
+        layout.addWidget(ccc_grp)
+
         # In-run Compass Calibration
         icc_grp = QGroupBox("In-run Compass Calibration (ICC)")
         icc_layout = QVBoxLayout(icc_grp)
