@@ -44,6 +44,14 @@ SPD_VFE = 85    # max flap extended (top of white arc)
 SPD_VNO = 129   # max structural cruise (top of green arc)
 SPD_VNE = 163   # never exceed (red line)
 
+# Speed trend vector — projects the speed SPD_TREND_SECONDS ahead at the
+# current acceleration. The threshold is held in m/s (2 kt = 1.0288 m/s)
+# rather than display units so the rule stays physically identical when the
+# unit setting is toggled.
+SPD_TREND_ENABLED = True
+SPD_TREND_SECONDS = 10.0
+SPD_TREND_MIN_MS = 1.0288
+
 
 class PFDWidget(QWidget):
     """Full PFD rendered via QPainter.
@@ -155,6 +163,20 @@ class PFDWidget(QWidget):
         self._gnss_lat = 0.0
         self._gnss_lon = 0.0
 
+        # Speed trend vector — longitudinal acceleration estimate,
+        # differentiated from the filtered ground speed (see
+        # _update_spd_trend).
+        self._spd_accel = 0.0            # m/s², heavily filtered
+        self._spd_accel_alpha = 0.97     # post-filter (~1s at 30 Hz)
+        self._spd_accel_min_dt = 0.05    # s — minimum difference window
+        self._spd_accel_max_dt = 2.0     # s — beyond this, treat as a dropout
+        self._prev_trend_speed = None
+        self._prev_trend_time = None
+
+        # Cached tape label-strip type scale (see _tape_strip_metrics)
+        self._strip_metrics_key = None
+        self._strip_metrics = None
+
     def set_data(self, data: SensorData):
         """Update attitude, heading, speed, altitude from sensor data."""
         if self._att_source == "accel" and data.acc:
@@ -198,6 +220,7 @@ class PFDWidget(QWidget):
                 raw_spd = 0.0
             a = self._spd_lp_alpha
             self._speed = a * self._speed + (1.0 - a) * raw_spd
+            self._update_spd_trend()
             gnss_vsi = -vz
             if self._vsi_source == "gnss":
                 self._valid_vsi = True
@@ -209,6 +232,7 @@ class PFDWidget(QWidget):
                 raw_spd = 0.0
             a = self._spd_lp_alpha
             self._speed = a * self._speed + (1.0 - a) * raw_spd
+            self._update_spd_trend()
 
         if self._alt_source == "gnss":
             if data.pos_alt is not None:
@@ -978,6 +1002,110 @@ class PFDWidget(QWidget):
 
         p.restore()
 
+    # ─────────── Speed trend ───────────
+
+    def _update_spd_trend(self):
+        """Differentiate the filtered ground speed into a longitudinal
+        acceleration estimate for the speed trend vector.
+
+        Same two-stage shape as the baro VSI above: self._speed is already
+        low-pass filtered, but differentiating it still amplifies the
+        remaining noise by the sample rate, so the derivative gets a heavy
+        post-filter. The difference is only taken over a window of at least
+        _spd_accel_min_dt so a burst of closely-spaced samples cannot blow
+        the estimate up.
+        """
+        now = time.monotonic()
+        if self._prev_trend_time is None:
+            self._prev_trend_speed = self._speed
+            self._prev_trend_time = now
+            return
+
+        dt = now - self._prev_trend_time
+        if dt < self._spd_accel_min_dt:
+            return  # keep the current window open rather than divide by ~0
+
+        if dt > self._spd_accel_max_dt:
+            # Sensor dropout — the difference spans an unknown gap, so
+            # restart instead of projecting from it.
+            self._spd_accel = 0.0
+        else:
+            accel = (self._speed - self._prev_trend_speed) / dt
+            a = self._spd_accel_alpha
+            self._spd_accel = a * self._spd_accel + (1.0 - a) * accel
+
+        self._prev_trend_speed = self._speed
+        self._prev_trend_time = now
+
+    # ─────────── Shared tape label-strip typography ───────────
+
+    # Widest strings either strip can ever hold. The fit uses these rather
+    # than the current text so the type scale stays put when the value
+    # changes or the unit is toggled.
+    STRIP_WIDEST_LABEL = "GS"
+    STRIP_WIDEST_VALUE = "000"
+    STRIP_WIDEST_UNIT = "KM/H"
+    STRIP_PAD = 3
+
+    def _tape_strip_metrics(self):
+        """Geometry and fonts for the label strips under the speed and
+        altitude tapes.
+
+        Both strips share one type scale so the two rows read as a single
+        uniform band. Two tiers: the GS number gets the bold value tier
+        (it is the only datum down here), everything else — "GS", the unit,
+        "ALT"/"GNSS", "m"/"ft" — gets the smaller dim label tier.
+
+        The scale is fitted to the worst-case GS composite inside the
+        *narrower* speed column, so it is guaranteed to fit both strips and
+        never resizes with the displayed value or the unit setting.
+
+        Cached per widget size: the fit loop builds QFontMetrics and must
+        not run on every frame at 30 Hz.
+
+        Returns (strip_h, value_font, label_font).
+        """
+        key = (self.width(), self.height())
+        if self._strip_metrics_key == key:
+            return self._strip_metrics
+
+        strip_h = max(20, int(self.height() * 0.045))
+        avail_w = self._layout()['spd'].width() - 2 * self.STRIP_PAD
+
+        val_sz = max(5, int(strip_h * 0.55))
+        while True:
+            val_font = QFont("Monospace", val_sz)
+            val_font.setBold(True)
+            lbl_font = QFont("Monospace", max(4, int(val_sz * 0.65)))
+            if val_sz <= 5 or self._strip_gs_width(
+                    QFontMetrics(val_font), QFontMetrics(lbl_font)) <= avail_w:
+                break
+            val_sz -= 1
+
+        # On a narrow speed column the width constraint wins by a wide
+        # margin, which would leave the strip several times taller than the
+        # text inside it. Hug the fitted type instead. Both strips take this
+        # same height, so the tape pointers stay aligned.
+        strip_h = max(20, min(strip_h, QFontMetrics(val_font).height() + 8))
+
+        self._strip_metrics_key = key
+        self._strip_metrics = (strip_h, val_font, lbl_font)
+        return self._strip_metrics
+
+    @staticmethod
+    def _strip_gap(val_fm: QFontMetrics) -> int:
+        """Gap between fields in either label strip. Both strips and the fit
+        take it from here so they cannot drift apart."""
+        return max(2, val_fm.horizontalAdvance("0") // 2)
+
+    def _strip_gs_width(self, val_fm: QFontMetrics, lbl_fm: QFontMetrics) -> float:
+        """Width of the worst-case GS composite — label, number, unit and the
+        gaps between them. This is what the type scale is fitted against."""
+        gap = self._strip_gap(val_fm)
+        return (lbl_fm.horizontalAdvance(self.STRIP_WIDEST_LABEL) + gap
+                + val_fm.horizontalAdvance(self.STRIP_WIDEST_VALUE) + gap
+                + lbl_fm.horizontalAdvance(self.STRIP_WIDEST_UNIT))
+
     # ─────────── Speed tape ───────────
 
     def _draw_speed_tape(self, p: QPainter, r: QRect):
@@ -994,8 +1122,9 @@ class PFDWidget(QWidget):
             span = 60.0                      # 60 kt visible
             gs_unit = "KT"
 
-        # Reserve bottom strip for GS readout
-        gs_strip_h = max(20, int(r.height() * 0.045))
+        # Reserve bottom strip for GS readout (shared geometry with the
+        # altitude tape's label strip so the two rows line up)
+        gs_strip_h, gs_val_font, gs_lbl_font = self._tape_strip_metrics()
         tape_r = QRect(r.left(), r.top(), r.width(), r.height() - gs_strip_h)
         gs_r = QRect(r.left(), tape_r.bottom(), r.width(), gs_strip_h)
 
@@ -1015,9 +1144,9 @@ class PFDWidget(QWidget):
         v_vno = SPD_VNO * spd_k
         v_vne = SPD_VNE * spd_k
 
-        if SPD_BANDS_ENABLED:
-            bw = max(4, int(tape_w * 0.08))
+        bw = max(4, int(tape_w * 0.08))  # V-speed band width
 
+        if SPD_BANDS_ENABLED:
             def _band(v_lo, v_hi, color):
                 yt = cy - (v_hi - speed_disp) * px_per_unit
                 yb = cy - (v_lo - speed_disp) * px_per_unit
@@ -1090,6 +1219,41 @@ class PFDWidget(QWidget):
                     p.setPen(QPen(FG_DIM, 1))
                     p.drawLine(QPointF(tape_w - tick_s, y), QPointF(tape_w, y))
 
+        # ── Speed trend vector ──
+        # Where the speed will be SPD_TREND_SECONDS from now if the current
+        # acceleration holds. Drawn before the pointer box so the box covers
+        # its base and it reads as emerging from the speed block.
+        if SPD_TREND_ENABLED and self._valid_spd:
+            delta_ms = self._spd_accel * SPD_TREND_SECONDS
+            if abs(delta_ms) > SPD_TREND_MIN_MS:
+                p.save()
+                delta_disp = delta_ms * (3.6 if self._metric else 1.94384)
+                y_end = cy - delta_disp * px_per_unit
+                y_end = max(tape_r.top() + 2.0, min(tape_r.bottom() - 2.0, y_end))
+                # Sit the vector just inside the V-speed band, close enough
+                # to read against the tape scale but with the arrowhead
+                # clear of the band itself.
+                ah = max(7.0, tape_w * 0.10)   # arrowhead length
+                ahw = ah * 0.55                # arrowhead half-width
+                right = (tape_w - bw) if SPD_BANDS_ENABLED else tape_w
+                tx = right - ahw - 2
+
+                p.setPen(QPen(YELLOW, 3.0))
+                p.drawLine(QPointF(tx, cy), QPointF(tx, y_end))
+
+                # Arrowhead at the projected end. Its base sits on the side
+                # facing the pointer box, so the tip leads the direction the
+                # speed is heading.
+                d = 1.0 if y_end < cy else -1.0
+                p.setPen(Qt.PenStyle.NoPen)
+                p.setBrush(QBrush(YELLOW))
+                p.drawPolygon(QPolygonF([
+                    QPointF(tx, y_end),
+                    QPointF(tx - ahw, y_end + d * ah),
+                    QPointF(tx + ahw, y_end + d * ah),
+                ]))
+                p.restore()
+
         # ── Pointer box with rolling digits ──
         a = self._disp_alpha
         self._disp_speed = a * self._disp_speed + (1.0 - a) * speed_disp
@@ -1130,50 +1294,41 @@ class PFDWidget(QWidget):
         # GS readout box at the bottom of the speed tape
         p.setClipping(False)
 
-        # Dynamically scale font to fit "GS 000 KM/H" within the box width
-        avail_w = gs_r.width() - 6  # padding
-        test_text = f"GS 000 {gs_unit}"
-        gs_font_sz = max(5, int(gs_strip_h * 0.55))
-        while gs_font_sz > 5:
-            test_font = QFont("Monospace", gs_font_sz)
-            test_font.setBold(True)
-            if QFontMetrics(test_font).horizontalAdvance(test_text) <= avail_w:
-                break
-            gs_font_sz -= 1
-
-        gs_font = QFont("Monospace", gs_font_sz)
-        gs_font.setBold(True)
-        gs_fm = QFontMetrics(gs_font)
-
-        unit_font_sz = max(4, int(gs_font_sz * 0.7))
-        unit_font = QFont("Monospace", unit_font_sz)
-        unit_fm = QFontMetrics(unit_font)
-
         p.setPen(QPen(QColor(160, 160, 160), 1))
         p.setBrush(QColor(20, 22, 28, 160))
         p.drawRect(gs_r)
 
-        baseline_y = gs_r.top() + gs_fm.ascent() + (gs_strip_h - gs_fm.height()) // 2
-        pad = 3
-        x = gs_r.left() + pad
+        val_fm = QFontMetrics(gs_val_font)
+        lbl_fm = QFontMetrics(gs_lbl_font)
 
-        # "GS" label
-        p.setPen(QPen(FG))
-        p.setFont(gs_font)
+        # The number carries the value tier; label and unit share the label
+        # tier with the altitude strip. Baseline is set from the value tier
+        # so both strips sit on the same optical line.
+        baseline_y = gs_r.top() + val_fm.ascent() + (gs_strip_h - val_fm.height()) // 2
+        gap = self._strip_gap(val_fm)
+
+        # Left-align the composite, using the same width model as the fit so
+        # the strip can never overflow.
+        x = gs_r.left() + self.STRIP_PAD
+
+        p.setFont(gs_lbl_font)
+        p.setPen(QPen(FG_DIM))
         p.drawText(x, baseline_y, "GS")
-        x += gs_fm.horizontalAdvance("GS") + gs_fm.horizontalAdvance(" ")
+        x += lbl_fm.horizontalAdvance(self.STRIP_WIDEST_LABEL) + gap
 
-        # Fixed-width numeric value
-        char_w = gs_fm.horizontalAdvance("0")
-        spd_str = f"{int(round(speed_disp)):3d}"
+        # Fixed 3-character numeric field. Clamped rather than allowed to
+        # overflow the box — above 999 is outside this aircraft class.
+        p.setFont(gs_val_font)
+        p.setPen(QPen(FG))
+        char_w = val_fm.horizontalAdvance("0")
+        spd_str = f"{min(999, int(round(speed_disp))):3d}"
         for ch in spd_str:
             if ch != ' ':
                 p.drawText(x, baseline_y, ch)
             x += char_w
 
-        # Unit with a small gap
-        x += max(2, char_w // 4)
-        p.setFont(unit_font)
+        x += gap
+        p.setFont(gs_lbl_font)
         p.setPen(QPen(FG_DIM))
         p.drawText(x, baseline_y, gs_unit)
         p.restore()
@@ -1188,16 +1343,17 @@ class PFDWidget(QWidget):
             major, minor = 50, 10                # tick spacing
             span = 300.0                         # visible range
             src = "GNSS" if self._alt_source == "gnss" else "ALT"
-            label = f"{src} m"
+            alt_unit = "m"
         else:
             alt_disp = self._altitude * 3.28084  # feet
             major, minor = 100, 20
             span = 600.0
             src = "GNSS" if self._alt_source == "gnss" else "ALT"
-            label = f"{src} ft"
+            alt_unit = "ft"
 
-        # Reserve same bottom strip as speed tape so pointers align
-        label_strip_h = max(20, int(r.height() * 0.045))
+        # Same bottom strip as the speed tape so the two rows align and
+        # share one type scale
+        label_strip_h, lbl_val_font, lbl_font = self._tape_strip_metrics()
         tape_r = QRect(r.left(), r.top(), r.width(), r.height() - label_strip_h)
 
         p.setClipRect(tape_r)
@@ -1270,31 +1426,31 @@ class PFDWidget(QWidget):
         box_r = QRectF(x0 + arrow_w, cy - box_h / 2, tape_w - arrow_w - 2, box_h)
         self._draw_drum_pointer(p, drum_alt, 5, cy, ptr_font_sz, box_r, x_text)
 
-        # Label strip at bottom (matches speed tape GS strip)
+        # Label strip at bottom — same geometry and type scale as the
+        # speed tape's GS strip
         p.setClipping(False)
         label_r = QRect(r.left(), tape_r.bottom(), r.width(), label_strip_h)
         p.setPen(QPen(QColor(160, 160, 160), 1))
         p.setBrush(QColor(20, 22, 28, 160))
         p.drawRect(label_r)
 
-        # Auto-scale font to fit label within strip
-        avail_lw = label_r.width() - 6
-        lbl_font_sz = max(5, int(label_strip_h * 0.55))
-        while lbl_font_sz > 5:
-            test_f = QFont("Monospace", lbl_font_sz)
-            test_f.setBold(True)
-            if QFontMetrics(test_f).horizontalAdvance(label) <= avail_lw:
-                break
-            lbl_font_sz -= 1
-        lbl_font = QFont("Monospace", lbl_font_sz)
-        lbl_font.setBold(True)
-        p.setFont(lbl_font)
         lfm = QFontMetrics(lbl_font)
+        # Baseline from the *value* tier, matching the GS strip, so both
+        # rows sit on the same optical line even though this strip only
+        # carries label-tier text.
+        vfm = QFontMetrics(lbl_val_font)
+        baseline_y = label_r.top() + vfm.ascent() + (label_strip_h - vfm.height()) // 2
+        gap = self._strip_gap(vfm)
+
+        p.setFont(lbl_font)
         p.setPen(QPen(FG_DIM))
-        # Right-align the label
-        lbl_w = lfm.horizontalAdvance(label)
-        p.drawText(label_r.right() - lbl_w - 3,
-                   label_r.top() + lfm.ascent() + (label_strip_h - lfm.height()) // 2, label)
+        # Right-align source + unit, separated by the same gap the GS strip
+        # uses between its own fields
+        src_w = lfm.horizontalAdvance(src)
+        unit_w = lfm.horizontalAdvance(alt_unit)
+        x = label_r.right() - self.STRIP_PAD - unit_w - gap - src_w
+        p.drawText(x, baseline_y, src)
+        p.drawText(x + src_w + gap, baseline_y, alt_unit)
         p.restore()
 
     # ─────────── Vertical Speed Indicator ───────────
