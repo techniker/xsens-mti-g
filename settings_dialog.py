@@ -6,7 +6,7 @@ All available device parameters exposed.
 
 import struct
 from PyQt6.QtWidgets import (
-    QDialog, QVBoxLayout, QHBoxLayout, QGridLayout,
+    QVBoxLayout, QHBoxLayout, QGridLayout,
     QLabel, QGroupBox, QPushButton, QComboBox, QSpinBox,
     QDoubleSpinBox, QCheckBox, QTabWidget, QWidget, QSlider,
     QLineEdit, QMessageBox, QScrollArea,
@@ -16,6 +16,7 @@ from PyQt6.QtGui import QFont
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 
 from sensors import MID, Baudrates
+from touch_dialog import TouchSafeDialog
 import pfd_widget
 from map_widget import PROVIDERS as MAP_PROVIDERS
 
@@ -67,11 +68,13 @@ def _section_label(text):
     return lbl
 
 
-class SettingsDialog(QDialog):
+class SettingsDialog(TouchSafeDialog):
+    """Kept non-modal so the MENU softkey and the [M] shortcut can still
+    toggle it closed; TouchSafeDialog is what stops it being buried by a
+    touch on the instruments."""
 
     def __init__(self, sensor, pfd, vario=None, map_view=None, parent=None):
         super().__init__(parent)
-        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
         self.sensor = sensor
         self.pfd = pfd
         self.vario = vario

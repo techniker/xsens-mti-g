@@ -28,7 +28,7 @@ import threading
 
 from PyQt6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QHBoxLayout, QVBoxLayout,
-    QLabel, QStatusBar, QPushButton, QDialog, QDoubleSpinBox, QGridLayout,
+    QLabel, QStatusBar, QPushButton, QDoubleSpinBox, QGridLayout,
     QSplitter, QFrame,
 )
 from PyQt6.QtCore import Qt, QTimer, pyqtSignal
@@ -38,6 +38,7 @@ from sensors import XSensSensor, SensorData, DeviceInfo
 from pfd_widget import PFDWidget
 import pfd_widget
 from data_panels import DataPanelWidget
+from touch_dialog import TouchSafeDialog
 from settings_dialog import SettingsDialog
 import config
 from vario_audio import VarioAudio
@@ -136,12 +137,13 @@ class BarButton(QPushButton):
             p.end()
 
 
-class _PopupBase(QDialog):
-    """Frameless popup base with a close button at the bottom."""
+class _PopupBase(TouchSafeDialog):
+    """Frameless popup base with a close button at the bottom.
+
+    Window flags and stay-on-top behaviour come from TouchSafeDialog."""
 
     def __init__(self, title_text: str, parent=None):
         super().__init__(parent)
-        self.setWindowFlags(Qt.WindowType.FramelessWindowHint | Qt.WindowType.Dialog)
         self.setStyleSheet(POPUP_STYLE)
         self._outer = QVBoxLayout(self)
         self._outer.setContentsMargins(10, 10, 10, 10)
