@@ -925,6 +925,51 @@ class PFDWidget(QWidget):
 
     # ─────────── Rolling drum digits ───────────
 
+    @staticmethod
+    def _drum_digits(value: float, num_digits: int):
+        """Per-position (digit, frac, visible) for a rolling drum readout.
+
+        Odometer semantics: the ones digit scrolls freely; a higher position
+        only scrolls once the position below it reaches 9 and starts rolling
+        over, so left-hand digits stay crisp and readable.
+
+        Split out from the drawing so the digit model can be tested without
+        rendering.
+        """
+        # A value past what the digits can show must peg, not wrap: without
+        # this a 5-digit drum reads 123456 as 23456, i.e. lower than the
+        # aircraft is actually doing.
+        limit = 10 ** num_digits - 1
+        val = min(abs(value), float(limit))
+
+        # The number the face reads. Halves round up, matching the point at
+        # which the incremented glyph takes over the baseline.
+        shown = math.floor(val + 0.5)
+
+        digits = []
+        prev_frac = 0.0
+        for position in range(num_digits):
+            place = 10 ** position
+            digit_val = (val / place) % 10.0
+            digit = int(digit_val) % 10
+
+            if position == 0:
+                frac = digit_val - int(digit_val)
+            else:
+                # Only scroll when the digit below is 9 and rolling
+                frac = prev_frac if digits[position - 1][0] == 9 else 0.0
+
+            # Smoothstep easing for fluid motion.
+            frac = frac * frac * (3.0 - 2.0 * frac)
+            # Suppress leading zeros (never suppress the ones digit).
+            # Keyed on what the face reads rather than on val: during a 9->0
+            # cascade the lower digits have already rolled over, so keying it
+            # on val hides the leading digit and 99.98 reads "00".
+            visible = position == 0 or shown >= place
+            digits.append((digit, frac, visible))
+            prev_frac = frac
+        return digits
+
     def _draw_drum_pointer(self, p: QPainter, value: float, num_digits: int,
                            cy: float, font_size: int, box_rect: QRectF,
                            x_text: float):
@@ -940,7 +985,6 @@ class PFDWidget(QWidget):
         char_w = fm.horizontalAdvance("0")
         digit_h = fm.height()
         half_box = box_rect.height() / 2.0
-        val = abs(value)
 
         # Right edge of the digit area
         x_right = x_text + num_digits * char_w
@@ -950,33 +994,9 @@ class PFDWidget(QWidget):
         p.setPen(QPen(FG, 1.5))
         baseline = cy + (fm.ascent() - fm.descent()) / 2.0
 
-        # Pre-compute per-position digit and cascade fraction.
-        # Ones scroll freely; each higher position only scrolls when the
-        # position below is at 9 and rolling over (mechanical odometer).
-        digits = []
-        prev_frac = 0.0
-        for position in range(num_digits):
-            place = 10 ** position
-            digit_val = (val / place) % 10.0
-            digit = int(digit_val) % 10
-
-            if position == 0:
-                frac = digit_val - int(digit_val)
-            else:
-                # Only scroll when the digit below is 9 and rolling
-                lower_digit = digits[position - 1][0]
-                frac = prev_frac if lower_digit == 9 else 0.0
-
-            # Smoothstep easing for fluid motion.
-            frac = frac * frac * (3.0 - 2.0 * frac)
-            digits.append((digit, frac))
-            prev_frac = frac
-
-        for position, (digit, frac) in enumerate(digits):
-            place = 10 ** position
-
-            # Suppress leading zeros (never suppress ones digit).
-            if position > 0 and val < place:
+        for position, (digit, frac, visible) in enumerate(
+                self._drum_digits(value, num_digits)):
+            if not visible:
                 continue
 
             next_d = (digit + 1) % 10
