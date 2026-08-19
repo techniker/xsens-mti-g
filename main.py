@@ -167,7 +167,11 @@ class QNHPopup(_PopupBase):
     def __init__(self, sensor, parent=None):
         super().__init__("QNH", parent)
         self.sensor = sensor
-        self.setFixedSize(300, 240)
+        # Width is a deliberate choice; height must follow the content. A
+        # fixed height smaller than the layout's minimum makes Qt overlap
+        # rows rather than refuse, and the touch-target button heights come
+        # from POPUP_STYLE, so the right height is not knowable here.
+        self.setFixedWidth(300)
 
         self._spin = QDoubleSpinBox()
         self._spin.setRange(900.0, 1100.0)
@@ -195,6 +199,8 @@ class QNHPopup(_PopupBase):
         btn_row2.addWidget(sensor_btn)
         self.content.addLayout(btn_row2)
 
+        self.adjustSize()
+
     def _from_sensor(self):
         data = self.sensor.get_latest()
         if data and data.pressure_pa and data.pressure_pa > 0:
@@ -204,7 +210,7 @@ class QNHPopup(_PopupBase):
 class AHRSPopup(_PopupBase):
     def __init__(self, pfd, calibrate_fn, parent=None):
         super().__init__("AHRS", parent)
-        self.setFixedSize(280, 240)
+        self.setFixedWidth(280)   # height follows the content — see QNHPopup
 
         level_btn = QPushButton("Level AHRS  [Z]")
         level_btn.clicked.connect(lambda: (pfd.zero_attitude(), self.accept()))
@@ -218,6 +224,8 @@ class AHRSPopup(_PopupBase):
         cal_btn.setObjectName("danger")
         cal_btn.clicked.connect(lambda: (calibrate_fn(), self.accept()))
         self.content.addWidget(cal_btn)
+
+        self.adjustSize()
 
 
 class PFDBottomBar(QWidget):
