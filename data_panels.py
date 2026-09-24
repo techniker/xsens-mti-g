@@ -12,7 +12,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtCore import Qt, QRectF, QPointF, QTimer, pyqtSignal
 from PyQt6.QtGui import QFont, QColor, QPainter, QPen, QBrush, QFontMetrics
 
-from sensors import SensorData, DeviceInfo
+from sensors import SensorData, DeviceInfo, PROTOCOL_MK4
 
 
 # ─────────── Styles ───────────
@@ -90,9 +90,14 @@ class DeviceInfoPanel(_KVGroup):
         self["did"].setText(f"0x{info.device_id:08X}")
         self["product"].setText(info.product_code or "--")
         self["fw"].setText(f"{info.fw_major}.{info.fw_minor}.{info.fw_rev}")
-        self["mode"].setText(f"0x{info.output_mode:04X}")
-        self["settings"].setText(f"0x{info.output_settings:08X}")
-        self["dlen"].setText(str(info.data_length))
+        if info.protocol == PROTOCOL_MK4:
+            self["mode"].setText("MTData2")
+            self["settings"].setText(f"{len(info.output_config)} XDIs")
+            self["dlen"].setText("var")
+        else:
+            self["mode"].setText(f"0x{info.output_mode:04X}")
+            self["settings"].setText(f"0x{info.output_settings:08X}")
+            self["dlen"].setText(str(info.data_length))
         self["rawgps"].setText("ON" if info.has_rawgps else "OFF")
         color = "#0c0" if info.has_rawgps else "#c00"
         self["rawgps"].setStyleSheet(VALUE_STYLE.replace("#ddd", color))

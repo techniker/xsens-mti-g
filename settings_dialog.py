@@ -15,7 +15,7 @@ from PyQt6.QtCore import Qt, QUrl
 from PyQt6.QtGui import QFont
 from PyQt6.QtNetwork import QNetworkAccessManager, QNetworkRequest, QNetworkReply
 
-from sensors import MID, Baudrates
+from sensors import MID, Baudrates, PROTOCOL_MK4
 from touch_dialog import TouchSafeDialog
 import pfd_widget
 from map_widget import PROVIDERS as MAP_PROVIDERS
@@ -80,6 +80,7 @@ class SettingsDialog(TouchSafeDialog):
         self.vario = vario
         self.map_view = map_view
         self.info = sensor.device_info
+        self._mk4 = self.info.protocol == PROTOCOL_MK4
         self.setMinimumSize(620, 520)
         self.setStyleSheet(DIALOG_STYLE)
 
@@ -117,8 +118,9 @@ class SettingsDialog(TouchSafeDialog):
             ("Product Code", i.product_code or "--"),
             ("Firmware", f"{i.fw_major}.{i.fw_minor}.{i.fw_rev}"),
             ("Hardware", f"{i.hw_major}.{i.hw_minor}" if i.hw_major else "--"),
-            ("Protocol", "Mark III (Legacy MTData 0x32)"),
-            ("Baudrate", f"{Baudrates._map.get(i.baudrate_id, '?')} bps (ID 0x{i.baudrate_id:02X})"),
+            ("Protocol", "Mark IV (MTData2 0x36)" if self._mk4 else "Mark III (Legacy MTData 0x32)"),
+            ("Baudrate", "n/a (native USB)" if str(getattr(self.sensor, "port", "")).startswith("usb")
+             else f"{Baudrates._map.get(i.baudrate_id, '?')} bps (ID 0x{i.baudrate_id:02X})"),
             ("Location ID", f"{i.location_id}"),
             ("Error Mode", f"0x{i.error_mode:04X}"),
             ("Transmit Delay", f"{i.transmit_delay}"),
@@ -136,11 +138,20 @@ class SettingsDialog(TouchSafeDialog):
         eff_hz = period_hz / (i.skip_factor + 1) if i.skip_factor >= 0 else period_hz
         q = i.alignment_rotation
         oq = i.object_alignment
-        cfg_fields = [
-            ("Output Mode", f"0x{i.output_mode:04X}"),
-            ("Output Settings", f"0x{i.output_settings:08X}"),
-            ("Data Length", f"{i.data_length} bytes"),
-            ("RAWGPS", "Enabled" if i.has_rawgps else "Disabled"),
+        if self._mk4:
+            output_fields = [
+                ("Output Config", ", ".join(
+                    f"{x:04X}@{'all' if f == 0xFFFF else f}" for x, f in i.output_config) or "--"),
+                ("GNSS PVT", "Enabled" if i.has_rawgps else "Disabled"),
+            ]
+        else:
+            output_fields = [
+                ("Output Mode", f"0x{i.output_mode:04X}"),
+                ("Output Settings", f"0x{i.output_settings:08X}"),
+                ("Data Length", f"{i.data_length} bytes"),
+                ("RAWGPS", "Enabled" if i.has_rawgps else "Disabled"),
+            ]
+        cfg_fields = output_fields + [
             ("Period", f"{i.period} (= {period_hz:.1f} Hz)"),
             ("Skip Factor", f"{i.skip_factor} (effective {eff_hz:.1f} Hz)"),
             ("Processing Flags", f"0x{i.processing_flags:02X}"),
@@ -195,6 +206,7 @@ class SettingsDialog(TouchSafeDialog):
         apply_rate_btn = QPushButton("Apply")
         apply_rate_btn.clicked.connect(self._apply_rate)
         rate_layout.addWidget(apply_rate_btn)
+        self._legacy_only(rate_grp)
         layout.addWidget(rate_grp)
 
         # Baudrate
@@ -227,6 +239,7 @@ class SettingsDialog(TouchSafeDialog):
             self._set_status("Transmit delay sent"),
         ))
         td_layout.addWidget(apply_td)
+        self._legacy_only(td_grp)
         layout.addWidget(td_grp)
 
         # Sync Out Settings
@@ -261,10 +274,17 @@ class SettingsDialog(TouchSafeDialog):
         apply_sync = QPushButton("Apply")
         apply_sync.clicked.connect(self._apply_sync_out)
         sync_grid.addWidget(apply_sync, 2, 0, 1, 4)
+        self._legacy_only(sync_grp)
         layout.addWidget(sync_grp)
 
         layout.addStretch()
         return w
+
+    def _legacy_only(self, grp):
+        """Grey out a control the Mark IV firmware has no command for."""
+        if self._mk4:
+            grp.setEnabled(False)
+            grp.setToolTip("Not available on Mark IV devices (MTi-G-710)")
 
     def _update_period_label(self):
         p = self._period_spin.value()
@@ -341,6 +361,7 @@ class SettingsDialog(TouchSafeDialog):
             self._set_status("Gravity magnitude sent"),
         ))
         grav_layout.addWidget(apply_grav)
+        self._legacy_only(grav_grp)
         layout.addWidget(grav_grp)
 
         # Alignment Rotation
@@ -378,6 +399,7 @@ class SettingsDialog(TouchSafeDialog):
             self._set_status("Processing flags sent"),
         ))
         pf_layout.addWidget(apply_pf)
+        self._legacy_only(pf_grp)
         layout.addWidget(pf_grp)
 
         # Object Alignment
@@ -397,6 +419,7 @@ class SettingsDialog(TouchSafeDialog):
         apply_obj = QPushButton("Apply")
         apply_obj.clicked.connect(self._apply_object_alignment)
         obj_grid.addWidget(apply_obj, 2, 0, 1, 4)
+        self._legacy_only(obj_grp)
         layout.addWidget(obj_grp)
 
         # Accel smoothing (display-side)
@@ -424,7 +447,10 @@ class SettingsDialog(TouchSafeDialog):
 
     def _apply_alignment(self):
         qw, qx, qy, qz = [s.value() for s in self._align_q]
-        self.sensor.apply_setting(MID.SetAlignmentRotation, struct.pack('!ffff', qw, qx, qy, qz))
+        data = struct.pack('!ffff', qw, qx, qy, qz)
+        if self._mk4:
+            data = b'\x00' + data   # frame selector: sensor alignment
+        self.sensor.apply_setting(MID.SetAlignmentRotation, data)
         self._set_status("Alignment rotation sent")
 
     def _apply_object_alignment(self):
@@ -480,6 +506,7 @@ class SettingsDialog(TouchSafeDialog):
             self._set_status("Magnetic declination sent"),
         ))
         mag_layout.addWidget(apply_decl)
+        self._legacy_only(mag_grp)
         layout.addWidget(mag_grp)
 
         # Compass Course Correction

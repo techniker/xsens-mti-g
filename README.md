@@ -1,6 +1,6 @@
 # Xsens MTi-G Primary Flight Display
 
-Full-featured PFD (Primary Flight Display) driven by an Xsens MTi-G IMU/GPS over serial, built with PyQt6.
+Full-featured PFD (Primary Flight Display) driven by an Xsens MTi-G or MTi-G-710 IMU/GPS over serial, built with PyQt6.
 
 ![Python](https://img.shields.io/badge/python-3.10+-blue)
 ![License](https://img.shields.io/badge/license-AGPL--3.0-blue)
@@ -65,12 +65,20 @@ Full-featured PFD (Primary Flight Display) driven by an Xsens MTi-G IMU/GPS over
 - **Persistent settings** — all user preferences saved to `config.json` and restored on next launch (including map state, zoom level, vario, synvis)
 - **Unit toggle** — metric (km/h, meters, m/s) or imperial (knots, feet, ft/min), V-speed bands convert dynamically
 
-Communicates using the Xsens Mark III legacy protocol (MTData `0x32`).
+Supported devices:
+
+| Device | Protocol | Notes |
+|--------|----------|-------|
+| MTi-G (legacy) | Mark III, MTData `0x32` | Full settings dialog |
+| MTi-G-710 | Mark IV, MTData2 `0x36` | Also other MTi 1/10/100-series units. Output rate follows the link: 100 Hz at ≥230400 bd, 50 Hz at 115200. Legacy-only settings are greyed out |
+
+The protocol is picked from the product code on connect. The Mark IV device is configured to output NWU-frame orientation and velocity, the frame the legacy MTi-G uses, so the instruments behave identically on both.
 
 ## Requirements
 
 - Python 3.10+
-- Xsens MTi-G connected via USB-serial
+- Xsens MTi-G connected via USB-serial, or MTi-G-710 via serial or its native USB cable
+- For native USB: libusb (`brew install libusb`) and `pyusb` (in `requirements.txt`)
 
 ## Install
 
@@ -88,8 +96,8 @@ python main.py [--port /dev/tty.usbserial-XSU5ZPZX] [--baud 230400] [--windowed]
 
 | Argument     | Default                            | Description                              |
 |--------------|------------------------------------|------------------------------------------|
-| `--port`     | `/dev/tty.usbserial-XSU5ZPZX`     | Serial port                              |
-| `--baud`     | `230400`                           | Baud rate                                |
+| `--port`     | `/dev/tty.usbserial-XSU5ZPZX`     | Serial port, or `usb` for the MTi-G-710's native USB link. If the serial port doesn't exist and an Xsens USB device is attached, USB is used automatically |
+| `--baud`     | `230400`                           | Baud rate tried first; 115200, 230400, 460800 and 921600 are probed if the device doesn't answer |
 | `--windowed` | off (fullscreen)                   | Start in windowed mode                   |
 
 QNH pressure, units, V-speeds, heading bug, and other settings are persisted in `config.json`.
@@ -114,7 +122,7 @@ QNH pressure, units, V-speeds, heading bug, and other settings are persisted in 
 | File                | Purpose                                              |
 |---------------------|------------------------------------------------------|
 | `main.py`           | Application entry point, softkey bar, popup dialogs  |
-| `sensors.py`        | Xsens MTi-G protocol, serial I/O, data parsing      |
+| `sensors.py`        | Xsens Mark III / Mark IV protocols, serial I/O, parsing |
 | `pfd_widget.py`     | PFD rendering (attitude, tapes, HSI, synthetic vision)|
 | `map_widget.py`     | Slippy map with tile providers and aircraft overlay   |
 | `terrain.py`        | Terrain elevation provider (AWS Terrain Tiles)        |
@@ -123,7 +131,9 @@ QNH pressure, units, V-speeds, heading bug, and other settings are persisted in 
 | `settings_dialog.py`| Tabbed device and display configuration UI            |
 | `config.py`         | JSON settings persistence                             |
 | `diag.py`           | Standalone sensor diagnostic (drift/bias statistics)  |
-| `test_calibrate.py` | Calibration validation harness                        |
+| `test_calibrate.py` | Calibration validation harness (legacy MTi-G)         |
+| `usb_transport.py`  | Native USB bulk transport for Mark IV devices (pyusb) |
+| `test_sensors_mtdata2.py` | MTData2 parser, GNSS mapping and framing tests (no device needed) |
 
 ## License
 
